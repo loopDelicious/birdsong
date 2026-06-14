@@ -10,6 +10,17 @@ photo, name, and confidence — on a full-screen display (e.g. a projector).
 - **`live_detect.py`** — a minimal terminal-only version that just prints
   detections. Handy for quick checks.
 
+## Recently identified
+
+A few of the birds the display has actually picked up in San Francisco (location
+filter on):
+
+| <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Nycticorax_nycticorax_457953189.jpg/330px-Nycticorax_nycticorax_457953189.jpg" width="240" alt="Black-crowned Night-Heron"> | <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/f1/House_finch_%2833688%292.jpg/330px-House_finch_%2833688%292.jpg" width="240" alt="House Finch"> | <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/97/American_robin_%2871307%29.jpg/330px-American_robin_%2871307%29.jpg" width="240" alt="American Robin"> |
+|:--:|:--:|:--:|
+| **Black-crowned Night-Heron**<br>*Nycticorax nycticorax* · heard ×4 | **House Finch**<br>*Haemorhous mexicanus* · heard ×2 | **American Robin**<br>*Turdus migratorius* · heard ×1 |
+
+<sub>Bird photos via [Wikimedia Commons](https://commons.wikimedia.org).</sub>
+
 ## Hardware
 
 - Raspberry Pi 5 (a Pi 4 also works; no AI accelerator needed — BirdNET runs on
