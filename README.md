@@ -12,11 +12,16 @@ photo, name, and confidence — on a full-screen display (e.g. a projector).
 
 ## What it looks like
 
-The live display on a projector, showing three birds heard around San Francisco
-— House Finch, Black-crowned Night-Heron, and American Robin — each with its
-photo, confidence, and the time it was heard:
+The display is designed as calm, ambient technology. A single bird emerges from a
+soft colour haze derived from its own photo, with its name lower-left and the time
+it was last heard — here, an American Robin heard at dawn:
 
-![Birdsong multi-bird display](docs/display.png)
+![Birdsong calm display showing an American Robin](docs/display.png)
+
+When no birds are calling it settles into a quiet "listening" state with the day's
+tally, so the wall always glows gently rather than going blank:
+
+![Birdsong quiet listening state](docs/display-quiet.png)
 
 <sub>Bird photos via [Wikimedia Commons](https://commons.wikimedia.org).</sub>
 

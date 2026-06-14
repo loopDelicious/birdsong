@@ -196,7 +196,7 @@ def state():
     now = time.time()
     with STATE_LOCK:
         live = [e for e in ACTIVE.values() if now - e["last_ts"] <= HOLD_SECONDS]
-        live.sort(key=lambda e: e["first_ts"])  # stable order: longest-active first
+        live.sort(key=lambda e: e["last_ts"], reverse=True)  # most-recent first (hero)
         live = live[:MAX_ON_SCREEN]
         birds = [{"common": e["common"], "scientific": e["scientific"],
                   "confidence": e["confidence"], "time": e["time"],
@@ -273,186 +273,183 @@ PAGE = r"""
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Birdsong</title>
 <style>
-  :root { --bg:#0b0f14; --fg:#f2f5f7; --muted:#7f8c99; --accent:#9fe3c5;
-    --panel:#121922; --line:#243040; }
+  :root { --bg:#0b0f14; --fg:#f4efe8; --muted:#aeb8c2; --accent:#e7b59a;
+    --panel:#121922; --line:#243040; --serif:Georgia,'Times New Roman',serif; }
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { height:100%; background:var(--bg); color:var(--fg);
-    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-    overflow:hidden; }
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; overflow:hidden; }
   body.hidecursor { cursor:none; }
-  #clock { position:fixed; top:4vmin; right:5vmin; z-index:6;
-    font-size:2.4vmin; color:var(--muted); text-shadow:0 1px 8px #000; }
-
-  /* ---- multi-bird grid ---- */
-  #grid { position:fixed; inset:0; display:grid; gap:2px; z-index:1; }
-  .card { position:relative; overflow:hidden; background:#0f141b; }
-  .card .img { position:absolute; inset:0; background-size:cover;
-    background-position:center; transition:opacity 1.2s ease; opacity:0; }
-  .card .scrim { position:absolute; inset:0; background:linear-gradient(180deg,
-    rgba(11,15,20,.05) 40%, rgba(11,15,20,.9) 100%); }
-  .card .label { position:absolute; left:0; right:0; bottom:0;
-    padding:3vmin 3.5vmin; z-index:2; }
-  .card .common { font-weight:700; line-height:1.05;
-    text-shadow:0 2px 16px rgba(0,0,0,.7); }
-  .card .sci { font-style:italic; color:var(--accent); margin-top:.6vmin; }
-  .card .meta { color:var(--muted); margin-top:1vmin; }
-  @keyframes fade { from{opacity:0} to{opacity:1} }
-
-  /* ---- idle ---- */
-  #idle { position:fixed; inset:0; z-index:2; display:flex; flex-direction:column;
-    align-items:center; justify-content:center; text-align:center; gap:2.5vmin;
-    opacity:0; transition:opacity 1s ease; pointer-events:none; }
+  #stage { position:fixed; inset:0; transition:filter 2s ease; }
+  #photos { position:absolute; inset:0; background:var(--bg); }
+  .photo { position:absolute; inset:0; opacity:0; transition:opacity 1.6s ease; }
+  .photo.on { opacity:1; }
+  .haze { position:absolute; inset:0; background-size:cover; background-position:center;
+    transform:scale(1.6); filter:blur(30px) brightness(.82) saturate(1.12);
+    animation:pan 50s ease-in-out infinite alternate; }
+  @keyframes pan { from{transform:scale(1.54) translate(-1.5%,-1%)}
+    to{transform:scale(1.7) translate(1.5%,-2.5%)} }
+  .subject { position:absolute; inset:0; background-size:cover; background-position:center;
+    opacity:1; transition:opacity 1.6s ease;
+    -webkit-mask-image:radial-gradient(ellipse 66% 74% at 50% 47%,#000 34%,transparent 86%);
+    mask-image:radial-gradient(ellipse 66% 74% at 50% 47%,#000 34%,transparent 86%); }
+  #photos.resting .subject { opacity:0; }
+  #photos.resting .haze { filter:blur(42px) brightness(.6) saturate(1.05); }
+  #scrim { position:absolute; inset:0; background:linear-gradient(56deg,
+    rgba(7,9,12,.85) 0%, rgba(7,9,12,.28) 40%, rgba(7,9,12,0) 64%); }
+  #info { position:absolute; left:0; bottom:0; padding:6vmin 6.5vmin; max-width:74vw;
+    transition:opacity 1.2s ease; }
+  #info.hide { opacity:0; }
+  #common { font-family:var(--serif); font-size:5.6vmin; line-height:1.04;
+    text-shadow:0 2px 24px rgba(0,0,0,.55); }
+  #sci { font-style:italic; color:var(--accent); font-size:2.5vmin; margin-top:1vmin; }
+  #meta { color:var(--muted); font-size:2.2vmin; margin-top:1.6vmin; }
+  #also { color:#8b96a3; font-size:2vmin; margin-top:1.2vmin; }
+  #idle { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; text-align:center; gap:2.4vmin; opacity:0;
+    transition:opacity 1.4s ease; pointer-events:none; }
   #idle.show { opacity:1; }
-  #idle .pulse { width:13vmin; height:13vmin; color:var(--accent);
-    animation:breathe 3.5s ease-in-out infinite; }
-  #idle .label { font-size:3.2vmin; color:var(--muted); letter-spacing:.5vmin;
-    text-transform:uppercase; }
-  #idle .stats { font-size:2.6vmin; }
-  #idle .chips { display:flex; flex-wrap:wrap; gap:1.4vmin; justify-content:center;
-    max-width:80vw; margin-top:2vmin; }
-  .chip { background:var(--panel); border:1px solid var(--line); border-radius:999px;
-    padding:1vmin 2.4vmin; font-size:2.2vmin; color:#cdd6df; }
-  .chip b { color:var(--accent); }
-  @keyframes breathe { 0%,100%{transform:scale(1);opacity:.85}
-    50%{transform:scale(1.12);opacity:1} }
-
-  /* ---- control panel ---- */
-  #fab { position:fixed; bottom:3.5vmin; right:3.5vmin; z-index:10; width:7vmin;
-    height:7vmin; min-width:46px; min-height:46px; border-radius:50%;
-    background:var(--panel); border:1px solid var(--line); color:var(--fg);
-    font-size:3vmin; cursor:pointer; opacity:.5; transition:opacity .25s;
-    display:flex; align-items:center; justify-content:center; }
+  #idle .dot { width:1.5vmin; height:1.5vmin; border-radius:50%; background:#9fe3c5;
+    animation:breathe 4s ease-in-out infinite; }
+  #idle .qlabel { color:#c4cdd6; font-size:2.6vmin; letter-spacing:.4vmin; }
+  #idle .qstat { font-family:var(--serif); font-size:3.6vmin; }
+  #idle .qlist { color:#8b96a3; font-size:2.2vmin; max-width:80vw; }
+  @keyframes breathe { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.95;transform:scale(1.14)} }
+  #wave { position:absolute; right:6vmin; bottom:6vmin; display:flex; gap:.5vmin;
+    align-items:center; height:2.4vmin; opacity:.42; }
+  #wave span { width:.4vmin; height:100%; background:rgba(255,255,255,.7); border-radius:2px;
+    transform-origin:center; animation:wv 1.7s ease-in-out infinite; }
+  @keyframes wv { 0%,100%{transform:scaleY(.22)} 50%{transform:scaleY(1)} }
+  #fab { position:fixed; bottom:3.5vmin; right:3.5vmin; z-index:10; width:6.5vmin; height:6.5vmin;
+    min-width:46px; min-height:46px; border-radius:50%; background:var(--panel);
+    border:1px solid var(--line); color:var(--fg); cursor:pointer; opacity:0; pointer-events:none;
+    transition:opacity .35s; display:flex; align-items:center; justify-content:center; }
+  body.ui #fab { opacity:.5; pointer-events:auto; }
   #fab:hover { opacity:1; }
-  #panel { position:fixed; bottom:13vmin; right:3.5vmin; z-index:10; width:340px;
-    max-width:80vw; background:var(--panel); border:1px solid var(--line);
-    border-radius:16px; padding:18px 18px 14px; box-shadow:0 18px 50px rgba(0,0,0,.6);
-    transform:translateY(12px) scale(.98); opacity:0; pointer-events:none;
-    transition:.2s ease; }
+  #panel { position:fixed; bottom:12vmin; right:3.5vmin; z-index:10; width:340px; max-width:80vw;
+    background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px 18px 14px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6); transform:translateY(12px) scale(.98); opacity:0;
+    pointer-events:none; transition:.2s ease; }
   #panel.open { transform:none; opacity:1; pointer-events:auto; }
-  #panel h3 { font-size:13px; text-transform:uppercase; letter-spacing:1px;
-    color:var(--muted); margin-bottom:14px; }
-  .row { display:flex; align-items:center; justify-content:space-between;
-    padding:11px 0; border-top:1px solid var(--line); }
+  #panel h3 { font-size:13px; text-transform:uppercase; letter-spacing:1px; color:#7f8c99; margin-bottom:14px; }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:11px 0;
+    border-top:1px solid var(--line); }
   .row:first-of-type { border-top:none; }
   .row .name { font-size:15px; }
-  .row .sub { font-size:12px; color:var(--muted); margin-top:2px; }
-  /* toggle */
-  .toggle { width:46px; height:26px; border-radius:999px; background:#2a3645;
-    position:relative; cursor:pointer; transition:.2s; flex:none; }
-  .toggle.on { background:var(--accent); }
-  .toggle::after { content:""; position:absolute; top:3px; left:3px; width:20px;
-    height:20px; border-radius:50%; background:#fff; transition:.2s; }
+  .row .sub { font-size:12px; color:#7f8c99; margin-top:2px; }
+  .toggle { width:46px; height:26px; border-radius:999px; background:#2a3645; position:relative;
+    cursor:pointer; transition:.2s; flex:none; }
+  .toggle.on { background:#9fe3c5; }
+  .toggle::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px;
+    border-radius:50%; background:#fff; transition:.2s; }
   .toggle.on::after { left:23px; }
-  /* stepper */
   .stepper { display:flex; align-items:center; gap:10px; }
   .stepper button { width:30px; height:30px; border-radius:8px; background:#1d2735;
     border:1px solid var(--line); color:var(--fg); font-size:18px; cursor:pointer; }
-  .stepper button:hover { background:#26344a; }
   .stepper .val { min-width:42px; text-align:center; font-variant-numeric:tabular-nums; }
-  .clearbtn { width:100%; margin-top:14px; padding:11px; border-radius:10px;
-    background:#1d2735; border:1px solid var(--line); color:var(--fg); font-size:14px;
-    cursor:pointer; }
-  .clearbtn:hover { background:#26344a; }
+  .clearbtn { width:100%; margin-top:14px; padding:11px; border-radius:10px; background:#1d2735;
+    border:1px solid var(--line); color:var(--fg); font-size:14px; cursor:pointer; }
 </style></head><body class="hidecursor">
-<div id="clock"></div>
-<div id="grid"></div>
-<div id="idle"><svg class="pulse" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
-    <ellipse cx="44" cy="60" rx="27" ry="21"/>
-    <circle cx="68" cy="40" r="15"/>
-    <path d="M22 60 L1 51 L19 67 Z"/>
-    <path d="M81 37 L98 35 L81 47 Z"/>
-    <circle cx="72" cy="37" r="2.6" fill="var(--bg)"/>
-  </svg><div class="label">Listening</div>
-  <div class="stats" id="idleStats"></div><div class="chips" id="chips"></div></div>
-
-<button id="fab" title="Controls">⚙</button>
+<div id="stage">
+  <div id="photos">
+    <div class="photo on" id="layerA"><div class="haze"></div><div class="subject"></div></div>
+    <div class="photo" id="layerB"><div class="haze"></div><div class="subject"></div></div>
+  </div>
+  <div id="scrim"></div>
+  <div id="info" class="hide">
+    <div id="common"></div><div id="sci"></div><div id="meta"></div><div id="also"></div>
+  </div>
+  <div id="idle">
+    <div class="dot"></div>
+    <div class="qlabel" id="qlabel">listening</div>
+    <div class="qstat" id="qstat"></div>
+    <div class="qlist" id="qlist"></div>
+  </div>
+  <div id="wave"></div>
+</div>
+<button id="fab" title="Controls" aria-label="Controls">
+  <svg viewBox="0 0 24 24" width="46%" height="46%" fill="none" stroke="currentColor"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+</button>
 <div id="panel">
   <h3>Controls</h3>
-  <div class="row">
-    <div><div class="name">Local filter</div>
-      <div class="sub">Only birds found near San Francisco</div></div>
-    <div class="toggle" id="locToggle"></div>
-  </div>
-  <div class="row">
-    <div><div class="name">Min confidence</div>
-      <div class="sub">Higher = fewer false positives</div></div>
+  <div class="row"><div><div class="name">Local filter</div>
+    <div class="sub">Only birds found near San Francisco</div></div>
+    <div class="toggle" id="locToggle"></div></div>
+  <div class="row"><div><div class="name">Min confidence</div>
+    <div class="sub">Higher = fewer false positives</div></div>
     <div class="stepper"><button id="confDown">−</button>
-      <div class="val" id="confVal">0.50</div><button id="confUp">+</button></div>
-  </div>
-  <button class="clearbtn" id="clearBtn">Clear screen → Listening</button>
+    <div class="val" id="confVal">0.50</div><button id="confUp">+</button></div></div>
+  <button class="clearbtn" id="clearBtn">Clear → resting</button>
 </div>
-
 <script>
-const grid=document.getElementById('grid'), idle=document.getElementById('idle'),
-  idleStats=document.getElementById('idleStats'), chips=document.getElementById('chips'),
-  clock=document.getElementById('clock'), fab=document.getElementById('fab'),
-  panel=document.getElementById('panel'), locToggle=document.getElementById('locToggle'),
-  confVal=document.getElementById('confVal'), confUp=document.getElementById('confUp'),
-  confDown=document.getElementById('confDown'), clearBtn=document.getElementById('clearBtn');
+const photos=document.getElementById('photos'),
+  layers=[document.getElementById('layerA'),document.getElementById('layerB')],
+  info=document.getElementById('info'), common=document.getElementById('common'),
+  sci=document.getElementById('sci'), meta=document.getElementById('meta'),
+  also=document.getElementById('also'), idle=document.getElementById('idle'),
+  qlabel=document.getElementById('qlabel'), qstat=document.getElementById('qstat'),
+  qlist=document.getElementById('qlist'), stage=document.getElementById('stage'),
+  fab=document.getElementById('fab'), panel=document.getElementById('panel'),
+  locToggle=document.getElementById('locToggle'), confVal=document.getElementById('confVal'),
+  confUp=document.getElementById('confUp'), confDown=document.getElementById('confDown'),
+  clearBtn=document.getElementById('clearBtn'), wave=document.getElementById('wave');
 
-// ---- control panel ----
-let cfg={min_conf:0.5, use_location:false};
+let cfg={min_conf:0.5, use_location:true};
 fab.onclick=()=>panel.classList.toggle('open');
 function applyCfg(c){ cfg=c; confVal.textContent=Number(c.min_conf).toFixed(2);
   locToggle.classList.toggle('on', !!c.use_location); }
-async function post(url, body){ const r=await fetch(url,{method:'POST',
-  headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
-  return r.json(); }
+async function post(u,b){ const r=await fetch(u,{method:'POST',
+  headers:{'Content-Type':'application/json'}, body:JSON.stringify(b||{})}); return r.json(); }
 locToggle.onclick=async()=>applyCfg(await post('/control',{use_location:!cfg.use_location}));
 confUp.onclick=async()=>applyCfg(await post('/control',{min_conf:Math.min(0.95,cfg.min_conf+0.05)}));
 confDown.onclick=async()=>applyCfg(await post('/control',{min_conf:Math.max(0.10,cfg.min_conf-0.05)}));
 clearBtn.onclick=async()=>{ await post('/clear'); tick(); };
 
-// ---- auto-hide cursor ----
-let curTimer; window.addEventListener('mousemove',()=>{
-  document.body.classList.remove('hidecursor'); clearTimeout(curTimer);
-  curTimer=setTimeout(()=>document.body.classList.add('hidecursor'),3000); });
+let curTimer;
+function activity(){ document.body.classList.remove('hidecursor'); document.body.classList.add('ui');
+  clearTimeout(curTimer); curTimer=setTimeout(()=>{ document.body.classList.add('hidecursor');
+    document.body.classList.remove('ui'); }, 3500); }
+window.addEventListener('mousemove',activity); window.addEventListener('touchstart',activity);
 
-// ---- render multi-bird grid ----
-const cards=new Map();
-function makeCard(b){ const el=document.createElement('div'); el.className='card';
-  el.innerHTML=`<div class="img"></div><div class="scrim"></div>
-    <div class="label"><div class="common"></div><div class="sci"></div>
-    <div class="meta"></div></div>`;
-  if(b.image_url){ const im=new Image(); im.onload=()=>{ const d=el.querySelector('.img');
-    d.style.backgroundImage=`url("${b.image_url}")`; d.style.opacity=1; }; im.src=b.image_url; }
-  return el; }
-function render(birds){
-  // stable alphabetical order so cards never jump around between polls
-  birds=birds.slice().sort((a,b)=> a.scientific<b.scientific?-1:1);
-  const keys=new Set(birds.map(b=>b.scientific));
-  for(const [k,el] of cards){ if(!keys.has(k)){ el.remove(); cards.delete(k); } }
-  const n=birds.length, cols=Math.ceil(Math.sqrt(n)), rows=Math.ceil(n/cols);
-  grid.style.gridTemplateColumns=`repeat(${cols},1fr)`;
-  grid.style.gridTemplateRows=`repeat(${rows},1fr)`;
-  const nameSize=Math.max(2.4, 8/cols), sciSize=Math.max(1.5,3.2/cols),
-    metaSize=Math.max(1.3,2.4/cols);
-  birds.forEach(b=>{ let el=cards.get(b.scientific);
-    // only NEW cards touch the DOM tree; existing cards stay put (no blink)
-    if(!el){ el=makeCard(b); cards.set(b.scientific,el); grid.appendChild(el); }
-    const c=el.querySelector('.common'); if(c.textContent!==b.common) c.textContent=b.common;
-    c.style.fontSize=nameSize+'vmin';
-    const sc=el.querySelector('.sci'); if(sc.textContent!==b.scientific) sc.textContent=b.scientific;
-    sc.style.fontSize=sciSize+'vmin';
-    const m=el.querySelector('.meta'); m.style.fontSize=metaSize+'vmin';
-    const meta=`heard at ${b.time} · ${Math.round(b.confidence*100)}% confidence`;
-    if(m.textContent!==meta) m.textContent=meta;
-  });
-}
+for(let i=0;i<26;i++){ const s=document.createElement('span');
+  s.style.animationDelay=(-Math.random()*1.7).toFixed(2)+'s'; wave.appendChild(s); }
+
+function nightDim(){ const d=new Date(), h=d.getHours()+d.getMinutes()/60; let b;
+  if(h>=7&&h<19) b=1; else if(h>=19&&h<22) b=1-(h-19)/3*0.4;
+  else if(h>=22||h<5) b=0.6; else b=0.6+(h-5)/2*0.4;
+  stage.style.filter='brightness('+b.toFixed(2)+')'; }
+
+let active=0, heroKey=null, heroImg=null;
+function setLayer(el,url){ const hz=el.querySelector('.haze'), sb=el.querySelector('.subject');
+  const v = url?('url("'+url+'")'):''; hz.style.backgroundImage=v; sb.style.backgroundImage=v; }
+function crossfade(url){ const next=active^1; setLayer(layers[next],url);
+  layers[next].classList.add('on'); layers[active].classList.remove('on'); active=next; }
+function partOfDay(){ const h=new Date().getHours();
+  return h>=5&&h<12?'morning':h>=12&&h<17?'afternoon':h>=17&&h<21?'evening':'night'; }
 
 async function tick(){
   let s; try{ s=await(await fetch('/state',{cache:'no-store'})).json(); }catch(e){ return; }
-  clock.textContent=s.clock;
   if(s.config) applyCfg(s.config);
+  nightDim();
   if(s.mode==='bird' && s.birds.length){
-    idle.classList.remove('show'); grid.style.display='grid'; render(s.birds);
+    photos.classList.remove('resting'); idle.classList.remove('show'); info.classList.remove('hide');
+    let hero=s.birds.find(b=>b.scientific===heroKey)||s.birds[0];
+    if(hero.scientific!==heroKey){ heroKey=hero.scientific; heroImg=hero.image_url||null;
+      crossfade(heroImg); common.textContent=hero.common; sci.textContent=hero.scientific; }
+    else if(hero.image_url && hero.image_url!==heroImg){ heroImg=hero.image_url;
+      setLayer(layers[active],heroImg); }
+    meta.textContent='last heard at '+(hero.time||'').toLowerCase();
+    const others=s.birds.filter(b=>b.scientific!==hero.scientific).map(b=>b.common);
+    also.textContent=others.length?'also now · '+others.slice(0,3).join(' · '):'';
   } else {
-    grid.style.display='none'; for(const [k,el] of cards){ el.remove(); } cards.clear();
-    idle.classList.add('show');
-    idleStats.textContent=s.species_today? `${s.species_today} species heard today`
-      : 'No birds heard yet today';
-    chips.innerHTML=''; s.today.slice(0,8).forEach(t=>{ const d=document.createElement('div');
-      d.className='chip'; d.innerHTML=`${t.common} <b>×${t.count}</b>`; chips.appendChild(d); });
+    info.classList.add('hide'); photos.classList.add('resting'); idle.classList.add('show'); heroKey=null;
+    qlabel.textContent='a quiet '+partOfDay();
+    qstat.textContent=s.species_today?(s.species_today+(s.species_today===1?' visitor':' visitors')+' today')
+      :'no visitors yet today';
+    qlist.textContent=s.today.slice(0,6).map(t=>t.common).join('   ·   ');
   }
 }
 tick(); setInterval(tick,1500);
