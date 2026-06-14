@@ -245,6 +245,24 @@ def clear():
     return jsonify({"ok": True})
 
 
+@app.route("/demo", methods=["POST"])
+def demo():
+    """Inject species into the live display (for screenshots / demos). Body:
+    {"species": [{"common": ..., "scientific": ..., "confidence": ...}, ...]}"""
+    data = request.get_json(force=True, silent=True) or {}
+    now = datetime.datetime.now().strftime("%-I:%M %p")
+    ts = time.time()
+    for i, s in enumerate(data.get("species", [])):
+        sci = s["scientific"]
+        fetch_image(s["common"], sci)  # synchronous so the photo is ready for the shot
+        with STATE_LOCK:
+            ACTIVE[sci] = {"common": s["common"], "scientific": sci,
+                           "confidence": round(float(s.get("confidence", 0.8)), 2),
+                           "time": s.get("time", now),
+                           "first_ts": ts + i * 0.001, "last_ts": ts}
+    return jsonify({"ok": True, "active": list(ACTIVE)})
+
+
 @app.route("/")
 def index():
     return render_template_string(PAGE)
