@@ -8,7 +8,9 @@
 #   systemctl --user enable --now birdsong.service
 #   sudo loginctl enable-linger "$USER"   # so it runs on boot without login
 #
-# Add --location to ExecStart for the real install (San Francisco filter on).
+# --location enables the location/season filter (lat/lon set in app.py, default
+# San Francisco) so only plausible local species show. Drop it for testing with
+# recordings of out-of-area birds.
 
 [Unit]
 Description=Birdsong live bird-song detector + projector display
@@ -16,7 +18,7 @@ After=default.target
 
 [Service]
 WorkingDirectory=%h/birdsong
-ExecStart=%h/birdsong/.venv/bin/python -u %h/birdsong/app.py --min-conf 0.5
+ExecStart=%h/birdsong/.venv/bin/python -u %h/birdsong/app.py --min-conf 0.5 --location
 Restart=always
 RestartSec=3
 
