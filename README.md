@@ -79,6 +79,24 @@ sudo loginctl enable-linger "$USER"   # start on boot without an active login
 
 Check it: `systemctl --user status birdsong.service` and `curl localhost:8000/state`.
 
+## Kiosk on a projector / TV (HDMI)
+
+On Raspberry Pi OS (Wayland/labwc desktop with autologin), boot straight into a
+full-screen browser showing the display:
+
+```bash
+cp kiosk/labwc-autostart ~/.config/labwc/autostart
+sudo reboot
+```
+
+On boot the Pi autologins, waits for the web server, and launches Chromium in
+kiosk mode (auto-restarted via `lwrespawn`). The connected display (e.g. an
+Anker Nebula) must be **powered on and set to its HDMI input** when the Pi boots
+so it gets detected. Remove `~/.config/labwc/autostart` to restore the normal
+desktop.
+
+> Pi 5 has **micro-HDMI** ports; the one nearest the USB-C jack is `HDMI0`.
+
 ## The display
 
 - **Multi-bird grid** — when several species are heard within the hold window,

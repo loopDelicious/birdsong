@@ -285,7 +285,8 @@ PAGE = r"""
     align-items:center; justify-content:center; text-align:center; gap:2.5vmin;
     opacity:0; transition:opacity 1s ease; pointer-events:none; }
   #idle.show { opacity:1; }
-  #idle .pulse { font-size:9vmin; animation:breathe 3.5s ease-in-out infinite; }
+  #idle .pulse { width:13vmin; height:13vmin; color:var(--accent);
+    animation:breathe 3.5s ease-in-out infinite; }
   #idle .label { font-size:3.2vmin; color:var(--muted); letter-spacing:.5vmin;
     text-transform:uppercase; }
   #idle .stats { font-size:2.6vmin; }
@@ -337,7 +338,13 @@ PAGE = r"""
 </style></head><body class="hidecursor">
 <div id="clock"></div>
 <div id="grid"></div>
-<div id="idle"><div class="pulse">🐦</div><div class="label">Listening</div>
+<div id="idle"><svg class="pulse" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
+    <ellipse cx="44" cy="60" rx="27" ry="21"/>
+    <circle cx="68" cy="40" r="15"/>
+    <path d="M22 60 L1 51 L19 67 Z"/>
+    <path d="M81 37 L98 35 L81 47 Z"/>
+    <circle cx="72" cy="37" r="2.6" fill="var(--bg)"/>
+  </svg><div class="label">Listening</div>
   <div class="stats" id="idleStats"></div><div class="chips" id="chips"></div></div>
 
 <button id="fab" title="Controls">⚙</button>
