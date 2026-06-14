@@ -1,0 +1,24 @@
+# systemd user service for the Birdsong detector + display.
+#
+# Install (on the Pi):
+#   mkdir -p ~/.config/systemd/user
+#   cp birdsong.service ~/.config/systemd/user/
+#   # adjust WorkingDirectory / ExecStart paths if your username/home differ
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now birdsong.service
+#   sudo loginctl enable-linger "$USER"   # so it runs on boot without login
+#
+# Add --location to ExecStart for the real install (San Francisco filter on).
+
+[Unit]
+Description=Birdsong live bird-song detector + projector display
+After=default.target
+
+[Service]
+WorkingDirectory=%h/birdsong
+ExecStart=%h/birdsong/.venv/bin/python -u %h/birdsong/app.py --min-conf 0.5
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

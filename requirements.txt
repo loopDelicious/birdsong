@@ -1,0 +1,20 @@
+# Birdsong dependencies — pinned to a known-good set for Raspberry Pi 5
+# (Debian 13 / aarch64) running under Python 3.11.
+#
+# IMPORTANT: numpy MUST stay <2. tflite-runtime 2.14.0 is compiled against
+# NumPy 1.x and segfaults under NumPy 2 ("_ARRAY_API not found"). Pinning numpy
+# first lets the resolver keep compatible scipy/numba.
+
+numpy<2
+
+birdnetlib==0.18.1
+librosa==0.11.0
+tflite-runtime==2.14.0
+soundfile==0.14.0
+
+flask==3.1.3
+requests==2.34.2
+
+# Transitive but pinned here for reproducibility on aarch64:
+scipy==1.17.1
+numba==0.65.1

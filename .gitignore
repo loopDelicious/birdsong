@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Audio / runtime artifacts
+*.wav
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local Claude Code config
+.claude/settings.local.json
