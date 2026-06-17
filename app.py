@@ -29,6 +29,7 @@ warnings.filterwarnings("ignore")
 STATE_LOCK = threading.Lock()
 ACTIVE = {}             # scientific_name -> live entry (with last_ts)
 TODAY = {}              # scientific_name -> cumulative {common, count, last, image_url}
+TODAY_DATE = datetime.date.today()  # calendar day TODAY belongs to
 IMG_CACHE = {}          # scientific_name -> image url (or None)
 HOLD_SECONDS = 90       # how long a bird stays on screen after last heard
 MAX_ON_SCREEN = 6       # cap simultaneous birds shown
@@ -37,6 +38,15 @@ CONFIG = {
     "device": "plughw:2,0", "seconds": 3, "rate": 48000,
     "min_conf": 0.5, "lat": 37.77, "lon": -122.42, "use_location": False,
 }
+
+
+def roll_today():
+    """Reset the daily tally when the calendar day changes. Caller holds STATE_LOCK."""
+    global TODAY_DATE
+    today = datetime.date.today()
+    if today != TODAY_DATE:
+        TODAY.clear()
+        TODAY_DATE = today
 
 
 # ------------------------------------------------------------------ bird photo
@@ -150,6 +160,7 @@ def detection_loop():
                     ts = time.time()
                     timestr = now.strftime("%-I:%M %p")
                     with STATE_LOCK:
+                        roll_today()
                         for d in rec.detections:
                             sci = d["scientific_name"]
                             prev = ACTIVE.get(sci)
@@ -195,6 +206,7 @@ def _nocache(resp):
 def state():
     now = time.time()
     with STATE_LOCK:
+        roll_today()
         live = [e for e in ACTIVE.values() if now - e["last_ts"] <= HOLD_SECONDS]
         live.sort(key=lambda e: e["last_ts"], reverse=True)  # most-recent first (hero)
         live = live[:MAX_ON_SCREEN]
