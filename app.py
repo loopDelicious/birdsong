@@ -14,6 +14,7 @@ import contextlib
 import datetime
 import io
 import os
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -47,6 +48,68 @@ def roll_today():
     if today != TODAY_DATE:
         TODAY.clear()
         TODAY_DATE = today
+
+
+# ----------------------------------------------------------------- detection log
+# Persistent, keep-forever log of every detection. Text only (no audio), so it
+# stays tiny — roughly 50-100 MB per year even in a busy yard.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "birdsong.db")
+DB_LOCK = threading.Lock()
+
+
+def db():
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def db_init():
+    with db() as c:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("""CREATE TABLE IF NOT EXISTS detections(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL, date TEXT NOT NULL,
+            scientific TEXT NOT NULL, common TEXT NOT NULL,
+            confidence REAL NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_det_date ON detections(date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_det_sci ON detections(scientific)")
+
+
+def log_detection(now, common, scientific, confidence):
+    try:
+        with DB_LOCK, db() as c:
+            c.execute(
+                "INSERT INTO detections(ts,date,scientific,common,confidence)"
+                " VALUES(?,?,?,?,?)",
+                (now.isoformat(timespec="seconds"), now.date().isoformat(),
+                 scientific, common, round(float(confidence), 2)))
+    except Exception as e:
+        print("db log error:", e, flush=True)
+
+
+def load_today():
+    """Seed the in-memory daily tally from today's logged rows, so the live
+    display survives a service restart mid-day."""
+    try:
+        with db() as c:
+            rows = c.execute(
+                "SELECT common, scientific, COUNT(*) n, MAX(ts) last_ts"
+                " FROM detections WHERE date=? GROUP BY scientific",
+                (datetime.date.today().isoformat(),)).fetchall()
+        with STATE_LOCK:
+            for r in rows:
+                TODAY[r["scientific"]] = {
+                    "common": r["common"], "scientific": r["scientific"],
+                    "count": r["n"], "last": fmt_time(r["last_ts"])}
+    except Exception as e:
+        print("db load error:", e, flush=True)
+
+
+def fmt_time(iso):
+    try:
+        return datetime.datetime.fromisoformat(iso).strftime("%-I:%M %p")
+    except Exception:
+        return iso
 
 
 # ------------------------------------------------------------------ bird photo
@@ -180,9 +243,11 @@ def detection_loop():
                                               "scientific": sci, "count": 1,
                                               "last": timestr}
                         names = sorted({d["common_name"] for d in rec.detections})
-                    # photo lookup happens OUTSIDE the lock in a worker thread
+                    # photo lookup + logging happen OUTSIDE the state lock
                     for d in rec.detections:
                         ensure_image(d["common_name"], d["scientific_name"])
+                        log_detection(now, d["common_name"], d["scientific_name"],
+                                      d["confidence"])
                     print(f"[{timestr}] {', '.join(names)}", flush=True)
             except Exception as e:
                 print("loop error:", e, flush=True)
@@ -255,6 +320,63 @@ def clear():
     with STATE_LOCK:
         ACTIVE.clear()
     return jsonify({"ok": True})
+
+
+def _day_species(conn, date):
+    rows = conn.execute(
+        "SELECT common, scientific, COUNT(*) count, MIN(ts) first_ts,"
+        " MAX(ts) last_ts, ROUND(MAX(confidence),2) max_conf"
+        " FROM detections WHERE date=? GROUP BY scientific ORDER BY count DESC",
+        (date,)).fetchall()
+    return [{"common": r["common"], "scientific": r["scientific"],
+             "count": r["count"], "first": fmt_time(r["first_ts"]),
+             "last": fmt_time(r["last_ts"]), "max_confidence": r["max_conf"]}
+            for r in rows]
+
+
+@app.route("/today")
+def today_log():
+    d = datetime.date.today().isoformat()
+    with db() as c:
+        species = _day_species(c, d)
+        total = c.execute("SELECT COUNT(*) n FROM detections WHERE date=?",
+                          (d,)).fetchone()["n"]
+    return jsonify({"date": d, "species_count": len(species),
+                    "detections": total, "species": species})
+
+
+@app.route("/history")
+def history_log():
+    date = request.args.get("date")
+    if date:  # drill into a single day
+        with db() as c:
+            species = _day_species(c, date)
+        return jsonify({"date": date, "species_count": len(species),
+                        "species": species})
+    try:
+        days = max(1, min(365, int(request.args.get("days", 14))))
+    except ValueError:
+        days = 14
+    since = (datetime.date.today() - datetime.timedelta(days=days - 1)).isoformat()
+    with db() as c:
+        daily = c.execute(
+            "SELECT date, COUNT(*) detections, COUNT(DISTINCT scientific) species"
+            " FROM detections WHERE date>=? GROUP BY date ORDER BY date DESC",
+            (since,)).fetchall()
+        top = c.execute(
+            "SELECT common, scientific, COUNT(*) count FROM detections"
+            " WHERE date>=? GROUP BY scientific ORDER BY count DESC LIMIT 10",
+            (since,)).fetchall()
+        tot = c.execute(
+            "SELECT COUNT(*) detections, COUNT(DISTINCT scientific) species"
+            " FROM detections WHERE date>=?", (since,)).fetchone()
+    return jsonify({
+        "days": days, "from": since, "to": datetime.date.today().isoformat(),
+        "totals": {"detections": tot["detections"], "species": tot["species"]},
+        "daily": [{"date": r["date"], "detections": r["detections"],
+                   "species_count": r["species"]} for r in daily],
+        "top_species": [{"common": r["common"], "scientific": r["scientific"],
+                         "count": r["count"]} for r in top]})
 
 
 @app.route("/demo", methods=["POST"])
@@ -485,6 +607,8 @@ def main():
                   min_conf=args.min_conf, lat=args.lat, lon=args.lon,
                   use_location=args.location)
 
+    db_init()
+    load_today()
     threading.Thread(target=detection_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=args.port, threaded=True)
 

@@ -9,6 +9,11 @@ venv/
 *.wav
 *.log
 
+# Detection log database
+*.db
+*.db-wal
+*.db-shm
+
 # Editor / OS
 .DS_Store
 .idea/

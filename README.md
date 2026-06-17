@@ -131,6 +131,66 @@ desktop.
   recordings of out-of-area birds you play for testing, which is expected.)
 - For the wall display, run with `--location` and leave it on.
 
+## Detection log & HTTP API
+
+Every detection is logged to a local SQLite database (`birdsong.db`, next to
+`app.py`). It's text-only (no audio), so it stays tiny — roughly 50–100 MB per
+year — and is kept indefinitely. The app exposes read-only JSON endpoints for
+stats; query them from any browser or script on your network.
+
+### `GET /today`
+
+Today's species with counts, first/last heard, and peak confidence.
+
+```bash
+curl http://birdpi.local:8000/today
+```
+```json
+{
+  "date": "2026-06-17",
+  "species_count": 3,
+  "detections": 6,
+  "species": [
+    {"common": "American Robin", "scientific": "Turdus migratorius",
+     "count": 3, "first": "6:31 AM", "last": "8:14 AM", "max_confidence": 0.85}
+  ]
+}
+```
+
+### `GET /history`
+
+Rolling-window summary. Optional `days` (default 14, max 365):
+
+```bash
+curl "http://birdpi.local:8000/history?days=7"
+```
+```json
+{
+  "days": 7, "from": "2026-06-11", "to": "2026-06-17",
+  "totals": {"detections": 8, "species": 4},
+  "daily": [{"date": "2026-06-17", "detections": 6, "species_count": 3}],
+  "top_species": [{"common": "American Robin",
+                   "scientific": "Turdus migratorius", "count": 4}]
+}
+```
+
+Pass `date=YYYY-MM-DD` instead to drill into one day's species breakdown
+(same shape as `/today`):
+
+```bash
+curl "http://birdpi.local:8000/history?date=2026-06-16"
+```
+
+### `GET /state`
+
+The live display feed (current bird(s), today's tally, clock, config) — polled
+by the kiosk page every 1.5 s. Returned fields: `mode` (`bird`/`idle`), `birds`,
+`today`, `species_today`, `clock`, `config`.
+
+> Write endpoints also exist for the control panel — `POST /control`
+> (`min_conf`, `use_location`), `POST /clear`, and `POST /demo` (inject species
+> for screenshots). These change live state but are not part of the read API.
+
 ## Notes & gotchas
 
 - Run only one instance — two processes contend for the single USB mic and
