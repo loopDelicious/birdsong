@@ -1,0 +1,108 @@
+{
+  "info": {
+    "_postman_id": "b17d5000-0000-4000-8000-birdsong0001",
+    "name": "Birdsong",
+    "description": "Endpoints for the Birdsong detector + display app (app.py). Set the `base_url` collection variable to your Pi, e.g. http://birdpi.local:8000",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://birdpi.local:8000" }
+  ],
+  "item": [
+    {
+      "name": "Read",
+      "item": [
+        {
+          "name": "State (live display feed)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/state", "host": ["{{base_url}}"], "path": ["state"] },
+            "description": "Current bird(s), today's tally, clock, and config. Polled by the kiosk/TFT every 1.5s."
+          }
+        },
+        {
+          "name": "Today",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/today", "host": ["{{base_url}}"], "path": ["today"] },
+            "description": "Today's species with counts, first/last heard, and peak confidence (from the SQLite log)."
+          }
+        },
+        {
+          "name": "History (rolling window)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/history?days=7",
+              "host": ["{{base_url}}"],
+              "path": ["history"],
+              "query": [{ "key": "days", "value": "7", "description": "1-365, default 14" }]
+            },
+            "description": "Per-day totals, daily breakdown, and top species over the window."
+          }
+        },
+        {
+          "name": "History (specific day)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/history?date=2026-06-21",
+              "host": ["{{base_url}}"],
+              "path": ["history"],
+              "query": [{ "key": "date", "value": "2026-06-21", "description": "YYYY-MM-DD; drills into one day" }]
+            },
+            "description": "One day's species breakdown (same shape as /today)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Control (write)",
+      "item": [
+        {
+          "name": "Set min confidence",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"min_conf\": 0.6\n}" },
+            "url": { "raw": "{{base_url}}/control", "host": ["{{base_url}}"], "path": ["control"] },
+            "description": "Set the detection confidence threshold (0.10-0.95)."
+          }
+        },
+        {
+          "name": "Toggle location filter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"use_location\": true\n}" },
+            "url": { "raw": "{{base_url}}/control", "host": ["{{base_url}}"], "path": ["control"] },
+            "description": "Turn the local (SF) species filter on/off. Turning on prunes non-local birds from the display."
+          }
+        },
+        {
+          "name": "Clear screen",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{base_url}}/clear", "host": ["{{base_url}}"], "path": ["clear"] },
+            "description": "Clear the currently-displayed birds (resets to Listening)."
+          }
+        },
+        {
+          "name": "Demo (inject birds for screenshots)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"species\": [\n    { \"common\": \"American Robin\", \"scientific\": \"Turdus migratorius\", \"confidence\": 0.82 },\n    { \"common\": \"House Finch\", \"scientific\": \"Haemorhous mexicanus\", \"confidence\": 0.64 }\n  ]\n}"
+            },
+            "url": { "raw": "{{base_url}}/demo", "host": ["{{base_url}}"], "path": ["demo"] },
+            "description": "Inject species into the live display (does not write to the log). Handy for screenshots."
+          }
+        }
+      ]
+    }
+  ]
+}
