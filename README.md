@@ -191,6 +191,59 @@ by the kiosk page every 1.5 s. Returned fields: `mode` (`bird`/`idle`), `birds`,
 > (`min_conf`, `use_location`), `POST /clear`, and `POST /demo` (inject species
 > for screenshots). These change live state but are not part of the read API.
 
+## TFT companion screen (optional)
+
+`tft.py` drives an **Adafruit Mini PiTFT 1.3"** (240×240, ST7789) on the GPIO
+header — a small status display. Two modes: **desk** (teal gradient background,
+shows the current bird with photo / today's tally / clock) and **on-the-go**
+(flat dark, shows last bird + a listening heartbeat / detection stats / a GPS
+placeholder). Mode auto-selects by network at boot (online → desk).
+
+- **Button A** (GPIO 23): short press = toggle desk ⇄ on-the-go; long press
+  (~1.5 s) = safe shutdown (needs passwordless `poweroff` in sudoers to work).
+- **Button B** (GPIO 24): short press = cycle views.
+
+### Setup (Raspberry Pi 5)
+
+```bash
+uv pip install -r requirements-tft.txt
+```
+
+Enable SPI on the header and make the buffer big enough for a full frame:
+
+```bash
+# 1. uncomment dtparam=spi=on  (gives a real /dev/spidev0.0 on the header)
+sudo sed -i 's/^#dtparam=spi=on/dtparam=spi=on/' /boot/firmware/config.txt
+# 2. let one 115,200-byte frame transfer in one go (else you get banding)
+grep -q spidev.bufsiz /boot/firmware/cmdline.txt || \
+  sudo sed -i 's/$/ spidev.bufsiz=131072/' /boot/firmware/cmdline.txt
+sudo reboot
+```
+
+Then install the service:
+
+```bash
+cp birdsong-tft.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now birdsong-tft.service
+```
+
+### Pi 5 display gotchas (hard-won)
+
+- **`dtparam=spi=on` is required** — without it GPIO 9/10/11 aren't muxed to SPI
+  and the screen stays dark (the code "runs" against an internal bus that isn't
+  wired to the header).
+- **`spidev.bufsiz` must be ≥ 115200** (a full 240×240×2 frame), or chunked
+  transfers corrupt at fixed boundaries → banding in the same rows.
+- **`cs=None`** — with SPI enabled the kernel owns CE0, so let hardware drive
+  chip-select; claiming it in software gives "GPIO busy".
+- **`rotation=180, y_offset=80`** — the 240×240 panel sits 80 rows into the
+  ST7789's 240×320 memory; without the offset the top band shows uninitialized
+  noise.
+- The board uses **24 pins** (seat it on pins 1–24 at the power/SD-card corner).
+- The screen and the official **active cooler** compete for space — use a 2×20
+  GPIO stacking header to keep both, or a low-profile heatsink.
+
 ## Notes & gotchas
 
 - Run only one instance — two processes contend for the single USB mic and

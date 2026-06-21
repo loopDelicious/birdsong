@@ -1,0 +1,9 @@
+# Extra dependencies for the optional Mini PiTFT companion screen (tft.py).
+# Install with:  uv pip install -r requirements-tft.txt
+#
+# lgpio is what makes Blinka work on the Pi 5 (RP1 GPIO).
+
+adafruit-circuitpython-rgb-display
+adafruit-blinka
+lgpio
+pillow

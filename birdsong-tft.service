@@ -1,0 +1,22 @@
+# systemd user service for the Mini PiTFT companion screen (tft.py).
+#
+# Install (on the Pi, after enabling SPI + spidev.bufsiz — see README):
+#   cp birdsong-tft.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now birdsong-tft.service
+#
+# Requires birdsong.service (it reads localhost:8000) and linger enabled.
+
+[Unit]
+Description=Birdsong TFT companion display
+After=birdsong.service
+Wants=birdsong.service
+
+[Service]
+WorkingDirectory=%h/birdsong
+ExecStart=%h/birdsong/.venv/bin/python -u %h/birdsong/tft.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
