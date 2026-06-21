@@ -9,8 +9,9 @@
 
 [Unit]
 Description=Birdsong TFT companion display
-After=birdsong.service
-Wants=birdsong.service
+# No After=birdsong.service — birdsong.service is After=default.target, which
+# would form an ordering cycle and silently drop this unit at boot. tft.py
+# tolerates the web app not being ready yet (it polls with timeouts).
 
 [Service]
 WorkingDirectory=%h/birdsong
