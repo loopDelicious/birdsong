@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "c9a11a91-3969-47f3-a33b-81b8c71f2770",
 		"name": "Birdsong",
-		"description": "Endpoints for the Birdsong detector + display app (app.py). Set the `base_url` collection variable to your Pi, e.g. http://birdpi.local:8000",
+		"description": "Endpoints for the [Birdsong detector](https://github.com/loopDelicious/birdsong/tree/main) + display app (app.py). Set the `base_url` collection variable to your Pi, e.g. http://birdpi.local:8000",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "1215211"
 	},
