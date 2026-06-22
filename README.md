@@ -191,13 +191,75 @@ by the kiosk page every 1.5 s. Returned fields: `mode` (`bird`/`idle`), `birds`,
 > (`min_conf`, `use_location`), `POST /clear`, and `POST /demo` (inject species
 > for screenshots). These change live state but are not part of the read API.
 
+## GPS (on-the-go)
+
+Plug a USB GPS stick (e.g. u-blox VK-172) into the Pi and every detection gets
+tagged with `lat`/`lon`. A second background thread also logs a continuous
+trail of points to `gps_tracks` while the stick has a fix — distance-thresholded
+(~8 m or 30 s) so a stationary Pi at home produces near-zero rows, but a bike
+ride produces one point every few seconds. Open **http://birdpi.local:8000/map**
+to see it: clustered markers per species over OpenStreetMap, your ride drawn
+as a polyline, with date-range and per-species filters.
+
+### Hardware setup
+
+- u-blox-based sticks (VK-172, VK-162) show up at `/dev/ttyACM0`.
+- Prolific PL2303-based sticks (e.g. BU-353S4) show up at `/dev/ttyUSB0`.
+- Either way, no extra driver is needed on Raspberry Pi OS — they're class-
+  compliant USB serial. Confirm with `dmesg | tail` after plugging in, and
+  `cat /dev/ttyACM0` should print `$GPxxx`/`$GNxxx` NMEA lines (Ctrl-C out).
+
+### Software setup
+
+```bash
+uv pip install -r requirements.txt   # already pulls in pyserial + pynmea2
+```
+
+The user running `app.py` must be able to read the serial device. On Pi OS
+that's the `dialout` group:
+
+```bash
+sudo usermod -a -G dialout "$USER"   # log out + back in to pick up
+```
+
+### Runtime flags
+
+```
+--gps-device /dev/ttyACM0   # override the serial path
+--gps-baud   9600           # most NMEA sticks default to 9600
+--no-gps                    # skip the GPS reader entirely
+```
+
+If the configured device is missing, `app.py` falls back to the other common
+path before giving up — so you can leave the default alone on most sticks.
+
+### Endpoints
+
+- `GET /gps` — current fix: `{fix, lat, lon, speed (m/s), heading, sats, hdop, ts, device}`.
+- `GET /detections?from=YYYY-MM-DD&to=YYYY-MM-DD&species=<sci>` — historical
+  detections with GPS coords (only rows with lat/lon by default; pass `all=1`
+  to include un-geocoded ones). Default window: last 14 days.
+- `GET /track?from=...&to=...` — the GPS trail (points in time order).
+- `GET /state` now also includes a `gps` field so the kiosk/TFT can show live
+  fix status.
+- `GET /map` — the Leaflet page itself.
+
+### Storage & privacy
+
+GPS coords live in the same local `birdsong.db` as the detection log; nothing
+leaves the Pi. The track table adds roughly 0.1–0.2 MB per hour of riding —
+still microscopic next to the bird log. If you share screenshots or the DB
+file, your home location is in it. Delete the `gps_tracks` table or set
+`lat/lon = NULL` in `detections` to scrub.
+
 ## TFT companion screen (optional)
 
 `tft.py` drives an **Adafruit Mini PiTFT 1.3"** (240×240, ST7789) on the GPIO
 header — a small status display. Two modes: **desk** (teal gradient background,
 shows the current bird with photo / today's tally / clock) and **on-the-go**
-(flat dark, shows last bird + a listening heartbeat / detection stats / a GPS
-placeholder). Mode auto-selects by network at boot (online → desk).
+(flat dark, shows last bird + a listening heartbeat / detection stats / live
+GPS coords from the USB stick — see [GPS](#gps-on-the-go) below). Mode
+auto-selects by network at boot (online → desk).
 
 - **Button A** (GPIO 23): short press = toggle desk ⇄ on-the-go; long press
   (~1.5 s) = safe shutdown (needs passwordless `poweroff` in sudoers to work).

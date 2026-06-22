@@ -15,6 +15,12 @@ soundfile==0.14.0
 flask==3.1.3
 requests==2.34.2
 
+# USB GPS (on-the-go mode): pyserial reads the NMEA stream from /dev/ttyACM0
+# (u-blox) or /dev/ttyUSB0 (Prolific), pynmea2 parses the RMC/GGA sentences.
+# Both are tiny, pure-Python, and unaffected by the numpy<2 pin above.
+pyserial==3.5
+pynmea2==1.19.0
+
 # Transitive but pinned here for reproducibility on aarch64:
 scipy==1.17.1
 numba==0.65.1

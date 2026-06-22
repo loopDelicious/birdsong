@@ -169,6 +169,126 @@
 						"description": "One day's species breakdown (same shape as /today)."
 					},
 					"response": []
+				},
+				{
+					"name": "GPS (current fix)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/gps",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"gps"
+							]
+						},
+						"description": "Current GPS fix from the USB stick: {fix, lat, lon, speed (m/s), heading, sats, hdop, ts, device}. fix=false means no current position (no stick / no satellites / just started)."
+					},
+					"response": []
+				},
+				{
+					"name": "Detections (with GPS)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/detections?from=2026-06-14&to=2026-06-21",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"detections"
+							],
+							"query": [
+								{
+									"key": "from",
+									"value": "2026-06-14",
+									"description": "YYYY-MM-DD inclusive (default: 14 days back from `to`)"
+								},
+								{
+									"key": "to",
+									"value": "2026-06-21",
+									"description": "YYYY-MM-DD inclusive (default: today)"
+								},
+								{
+									"key": "species",
+									"value": "Turdus migratorius",
+									"description": "Optional scientific name filter",
+									"disabled": true
+								},
+								{
+									"key": "all",
+									"value": "1",
+									"description": "Include rows without GPS coords (default: only rows with lat/lon)",
+									"disabled": true
+								},
+								{
+									"key": "limit",
+									"value": "5000",
+									"description": "Max rows, 1-20000 (default 5000)",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Historical detections within a date range. By default only rows with GPS coords are returned (so the map page can plot them directly). Pass `all=1` to include un-geocoded rows."
+					},
+					"response": []
+				},
+				{
+					"name": "Track (GPS trail)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/track?from=2026-06-14&to=2026-06-21",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"track"
+							],
+							"query": [
+								{
+									"key": "from",
+									"value": "2026-06-14",
+									"description": "YYYY-MM-DD inclusive"
+								},
+								{
+									"key": "to",
+									"value": "2026-06-21",
+									"description": "YYYY-MM-DD inclusive"
+								},
+								{
+									"key": "limit",
+									"value": "20000",
+									"description": "Max points, 1-100000",
+									"disabled": true
+								}
+							]
+						},
+						"description": "GPS track points (continuous bike-ride trail) ordered by time. Points are written distance-thresholded (~8m or 30s), so a stationary install produces near-zero rows."
+					},
+					"response": []
+				},
+				{
+					"name": "Map page (HTML)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/map",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"map"
+							]
+						},
+						"description": "The Leaflet map view: clustered markers for detections + the ride trail, with species and date-range filters. Open in a browser; not really a JSON API."
+					},
+					"response": []
 				}
 			]
 		},

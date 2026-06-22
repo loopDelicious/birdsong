@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import datetime
 import io
+import math
 import os
 import sqlite3
 import subprocess
@@ -73,16 +74,34 @@ def db_init():
             confidence REAL NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_det_date ON detections(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_det_sci ON detections(scientific)")
+        # GPS columns added later; old rows keep NULLs and stay valid.
+        existing = {r["name"] for r in c.execute("PRAGMA table_info(detections)")}
+        for col in ("lat", "lon", "accuracy", "speed"):
+            if col not in existing:
+                c.execute(f"ALTER TABLE detections ADD COLUMN {col} REAL")
+        # Continuous track log for on-the-go rides.
+        c.execute("""CREATE TABLE IF NOT EXISTS gps_tracks(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL, date TEXT NOT NULL,
+            lat REAL NOT NULL, lon REAL NOT NULL,
+            speed REAL, heading REAL, accuracy REAL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_track_date ON gps_tracks(date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_track_ts ON gps_tracks(ts)")
 
 
-def log_detection(now, common, scientific, confidence):
+def log_detection(now, common, scientific, confidence,
+                  lat=None, lon=None, accuracy=None, speed=None):
     try:
         with DB_LOCK, db() as c:
             c.execute(
-                "INSERT INTO detections(ts,date,scientific,common,confidence)"
-                " VALUES(?,?,?,?,?)",
+                "INSERT INTO detections(ts,date,scientific,common,confidence,"
+                "lat,lon,accuracy,speed) VALUES(?,?,?,?,?,?,?,?,?)",
                 (now.isoformat(timespec="seconds"), now.date().isoformat(),
-                 scientific, common, round(float(confidence), 2)))
+                 scientific, common, round(float(confidence), 2),
+                 None if lat is None else round(float(lat), 6),
+                 None if lon is None else round(float(lon), 6),
+                 None if accuracy is None else round(float(accuracy), 2),
+                 None if speed is None else round(float(speed), 2)))
     except Exception as e:
         print("db log error:", e, flush=True)
 
@@ -110,6 +129,199 @@ def fmt_time(iso):
         return datetime.datetime.fromisoformat(iso).strftime("%-I:%M %p")
     except Exception:
         return iso
+
+
+# ----------------------------------------------------------------------- GPS
+# Live GPS state from the USB stick. `fix` is True only when we currently have
+# a position; if the stick is unplugged or the sky view is bad, lat/lon stay
+# stale but we flip fix=False so callers know not to trust them.
+GPS_LOCK = threading.Lock()
+GPS_STATE = {
+    "fix": False, "lat": None, "lon": None, "speed": None, "heading": None,
+    "sats": 0, "hdop": None, "ts": None, "device": None,
+}
+GPS_CONFIG = {"device": "/dev/ttyACM0", "baud": 9600, "enabled": True}
+
+
+def gps_snapshot():
+    """Read-only copy of GPS_STATE for callers that need a consistent view."""
+    with GPS_LOCK:
+        return dict(GPS_STATE)
+
+
+def _gps_mark_no_fix():
+    with GPS_LOCK:
+        GPS_STATE["fix"] = False
+
+
+def _gps_open_serial():
+    """Try the configured device, then fall back to the other common path.
+    Returns an open serial.Serial or None."""
+    import serial
+    candidates = [GPS_CONFIG["device"]]
+    # u-blox VK-172 -> /dev/ttyACM0; Prolific BU-353 -> /dev/ttyUSB0. Cover both.
+    for alt in ("/dev/ttyACM0", "/dev/ttyUSB0"):
+        if alt not in candidates:
+            candidates.append(alt)
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            s = serial.Serial(path, GPS_CONFIG["baud"], timeout=2)
+            with GPS_LOCK:
+                GPS_STATE["device"] = path
+            return s
+        except Exception as e:
+            print(f"gps: open {path} failed: {e}", flush=True)
+    return None
+
+
+def gps_reader_loop():
+    """Read NMEA from the USB GPS and keep GPS_STATE current. Auto-reconnects."""
+    try:
+        import pynmea2
+        import serial  # noqa: F401  (imported here so the loop fails fast)
+    except ImportError as e:
+        print(f"gps: pyserial/pynmea2 not installed ({e}); GPS disabled", flush=True)
+        return
+    print("gps: reader starting", flush=True)
+    last_line = 0.0
+    while True:
+        ser = _gps_open_serial()
+        if ser is None:
+            _gps_mark_no_fix()
+            time.sleep(5)
+            continue
+        print(f"gps: reading from {GPS_STATE['device']}", flush=True)
+        try:
+            while True:
+                try:
+                    raw = ser.readline()
+                except Exception as e:
+                    print(f"gps: read error: {e}", flush=True)
+                    break
+                if not raw:
+                    # readline timed out: if no sentences for ~10s, drop fix
+                    if time.time() - last_line > 10:
+                        _gps_mark_no_fix()
+                    continue
+                last_line = time.time()
+                try:
+                    line = raw.decode("ascii", errors="ignore").strip()
+                    if not line.startswith("$"):
+                        continue
+                    msg = pynmea2.parse(line)
+                except Exception:
+                    continue
+                _gps_apply(msg)
+        finally:
+            with contextlib.suppress(Exception):
+                ser.close()
+        _gps_mark_no_fix()
+        time.sleep(2)
+
+
+def _gps_apply(msg):
+    """Fold one parsed NMEA sentence into GPS_STATE."""
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        # RMC = position + speed + course; the recommended minimum fix
+        if msg.sentence_type == "RMC":
+            valid = getattr(msg, "status", "") == "A"
+            lat = getattr(msg, "latitude", None)
+            lon = getattr(msg, "longitude", None)
+            if valid and lat is not None and lon is not None and (lat or lon):
+                speed_knots = getattr(msg, "spd_over_grnd", None)
+                speed_ms = float(speed_knots) * 0.514444 if speed_knots else None
+                heading = getattr(msg, "true_course", None)
+                with GPS_LOCK:
+                    GPS_STATE["fix"] = True
+                    GPS_STATE["lat"] = round(float(lat), 6)
+                    GPS_STATE["lon"] = round(float(lon), 6)
+                    GPS_STATE["speed"] = round(speed_ms, 2) if speed_ms is not None else None
+                    GPS_STATE["heading"] = float(heading) if heading not in (None, "") else None
+                    GPS_STATE["ts"] = now_iso
+            elif not valid:
+                with GPS_LOCK:
+                    GPS_STATE["fix"] = False
+                    GPS_STATE["ts"] = now_iso
+        # GGA = fix quality + sat count + HDOP
+        elif msg.sentence_type == "GGA":
+            sats = getattr(msg, "num_sats", None)
+            hdop = getattr(msg, "horizontal_dil", None)
+            quality = int(getattr(msg, "gps_qual", 0) or 0)
+            with GPS_LOCK:
+                if sats not in (None, ""):
+                    with contextlib.suppress(ValueError):
+                        GPS_STATE["sats"] = int(sats)
+                if hdop not in (None, ""):
+                    with contextlib.suppress(ValueError):
+                        GPS_STATE["hdop"] = float(hdop)
+                if quality == 0:
+                    GPS_STATE["fix"] = False
+                GPS_STATE["ts"] = now_iso
+    except Exception as e:
+        print(f"gps: apply error: {e}", flush=True)
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    """Great-circle distance in meters between two lat/lon points."""
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+# How far apart consecutive logged track points must be (meters), and the
+# longest we'll go without logging when a fix is present (seconds). Together
+# these keep a stationary Pi near zero rows while a bike ride produces a clean
+# point every few seconds.
+TRACK_MIN_DIST_M = 8.0
+TRACK_MAX_GAP_S = 30.0
+
+
+def log_track_point(lat, lon, speed, heading, hdop):
+    """Append one point to gps_tracks."""
+    try:
+        now = datetime.datetime.now()
+        with DB_LOCK, db() as c:
+            c.execute(
+                "INSERT INTO gps_tracks(ts,date,lat,lon,speed,heading,accuracy)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (now.isoformat(timespec="seconds"), now.date().isoformat(),
+                 float(lat), float(lon),
+                 float(speed) if speed is not None else None,
+                 float(heading) if heading is not None else None,
+                 float(hdop) if hdop is not None else None))
+    except Exception as e:
+        print("track log error:", e, flush=True)
+
+
+def track_writer_loop():
+    """Sub-sample GPS_STATE into the gps_tracks table while we have a fix."""
+    last_lat = last_lon = None
+    last_ts = 0.0
+    print("gps: track writer starting", flush=True)
+    while True:
+        time.sleep(2)
+        snap = gps_snapshot()
+        if not snap["fix"] or snap["lat"] is None or snap["lon"] is None:
+            continue
+        now = time.time()
+        moved_enough = False
+        if last_lat is None:
+            moved_enough = True  # first point after fix
+        else:
+            d = _haversine_m(last_lat, last_lon, snap["lat"], snap["lon"])
+            if d >= TRACK_MIN_DIST_M:
+                moved_enough = True
+        if moved_enough or (now - last_ts) >= TRACK_MAX_GAP_S:
+            log_track_point(snap["lat"], snap["lon"], snap["speed"],
+                            snap["heading"], snap["hdop"])
+            last_lat, last_lon = snap["lat"], snap["lon"]
+            last_ts = now
 
 
 # ------------------------------------------------------------------ bird photo
@@ -222,6 +434,10 @@ def detection_loop():
                     now = datetime.datetime.now()
                     ts = time.time()
                     timestr = now.strftime("%-I:%M %p")
+                    # Snapshot GPS once so every detection in this chunk gets
+                    # the same coords; cheap (no I/O, just a dict copy).
+                    gps = gps_snapshot()
+                    has_fix = gps.get("fix") and gps.get("lat") is not None
                     with STATE_LOCK:
                         roll_today()
                         for d in rec.detections:
@@ -246,8 +462,14 @@ def detection_loop():
                     # photo lookup + logging happen OUTSIDE the state lock
                     for d in rec.detections:
                         ensure_image(d["common_name"], d["scientific_name"])
-                        log_detection(now, d["common_name"], d["scientific_name"],
-                                      d["confidence"])
+                        log_detection(
+                            now, d["common_name"], d["scientific_name"],
+                            d["confidence"],
+                            lat=gps.get("lat") if has_fix else None,
+                            lon=gps.get("lon") if has_fix else None,
+                            accuracy=gps.get("hdop") if has_fix else None,
+                            speed=gps.get("speed") if has_fix else None,
+                        )
                     print(f"[{timestr}] {', '.join(names)}", flush=True)
             except Exception as e:
                 print("loop error:", e, flush=True)
@@ -287,7 +509,13 @@ def state():
             "clock": datetime.datetime.now().strftime("%-I:%M %p"),
             "config": {"min_conf": CONFIG["min_conf"],
                        "use_location": CONFIG["use_location"]},
+            "gps": gps_snapshot(),
         })
+
+
+@app.route("/gps")
+def gps_endpoint():
+    return jsonify(gps_snapshot())
 
 
 @app.route("/control", methods=["POST"])
@@ -379,6 +607,77 @@ def history_log():
                          "count": r["count"]} for r in top]})
 
 
+def _window(default_days=14):
+    """Resolve from/to query params into ISO dates. Both optional."""
+    today = datetime.date.today()
+    to_s = request.args.get("to")
+    from_s = request.args.get("from")
+    try:
+        to_d = datetime.date.fromisoformat(to_s) if to_s else today
+    except ValueError:
+        to_d = today
+    try:
+        from_d = (datetime.date.fromisoformat(from_s) if from_s
+                  else to_d - datetime.timedelta(days=default_days - 1))
+    except ValueError:
+        from_d = to_d - datetime.timedelta(days=default_days - 1)
+    return from_d.isoformat(), to_d.isoformat()
+
+
+@app.route("/detections")
+def detections_log():
+    """Historical detections with GPS coords. Filters: from, to, species, limit.
+    Only rows with non-NULL lat/lon are returned (so the map page can plot
+    them directly). Pass ?all=1 to include un-geocoded rows."""
+    from_d, to_d = _window(default_days=14)
+    species = request.args.get("species")
+    include_all = request.args.get("all") in ("1", "true", "yes")
+    try:
+        limit = max(1, min(20000, int(request.args.get("limit", 5000))))
+    except ValueError:
+        limit = 5000
+    where = ["date>=?", "date<=?"]
+    params = [from_d, to_d]
+    if not include_all:
+        where.append("lat IS NOT NULL AND lon IS NOT NULL")
+    if species:
+        where.append("scientific=?")
+        params.append(species)
+    sql = ("SELECT ts,scientific,common,confidence,lat,lon,accuracy,speed"
+           " FROM detections WHERE " + " AND ".join(where)
+           + " ORDER BY ts DESC LIMIT ?")
+    params.append(limit)
+    with db() as c:
+        rows = c.execute(sql, params).fetchall()
+    items = [{
+        "ts": r["ts"], "common": r["common"], "scientific": r["scientific"],
+        "confidence": r["confidence"], "lat": r["lat"], "lon": r["lon"],
+        "accuracy": r["accuracy"], "speed": r["speed"],
+    } for r in rows]
+    return jsonify({"from": from_d, "to": to_d, "count": len(items),
+                    "detections": items})
+
+
+@app.route("/track")
+def track_log():
+    """GPS track points in time order. Filters: from, to, limit."""
+    from_d, to_d = _window(default_days=14)
+    try:
+        limit = max(1, min(100000, int(request.args.get("limit", 20000))))
+    except ValueError:
+        limit = 20000
+    with db() as c:
+        rows = c.execute(
+            "SELECT ts,lat,lon,speed FROM gps_tracks"
+            " WHERE date>=? AND date<=? ORDER BY ts ASC LIMIT ?",
+            (from_d, to_d, limit)).fetchall()
+    return jsonify({
+        "from": from_d, "to": to_d, "count": len(rows),
+        "points": [{"ts": r["ts"], "lat": r["lat"], "lon": r["lon"],
+                    "speed": r["speed"]} for r in rows],
+    })
+
+
 @app.route("/demo", methods=["POST"])
 def demo():
     """Inject species into the live display (for screenshots / demos). Body:
@@ -400,6 +699,13 @@ def demo():
 @app.route("/")
 def index():
     return render_template_string(PAGE)
+
+
+@app.route("/map")
+def map_page():
+    return render_template_string(MAP_PAGE,
+                                  default_lat=CONFIG["lat"],
+                                  default_lon=CONFIG["lon"])
 
 
 PAGE = r"""
@@ -459,6 +765,13 @@ PAGE = r"""
     transition:opacity .35s; display:flex; align-items:center; justify-content:center; }
   body.ui #fab { opacity:.5; pointer-events:auto; }
   #fab:hover { opacity:1; }
+  #maplink { position:fixed; bottom:3.5vmin; left:3.5vmin; z-index:10; color:var(--fg);
+    text-decoration:none; font-size:14px; letter-spacing:.18em; text-transform:uppercase;
+    padding:10px 14px; border:1px solid var(--line); border-radius:999px;
+    background:rgba(18,25,34,.6); backdrop-filter:blur(6px); opacity:0; pointer-events:none;
+    transition:opacity .35s; }
+  body.ui #maplink { opacity:.55; pointer-events:auto; }
+  #maplink:hover { opacity:1; }
   #panel { position:fixed; bottom:12vmin; right:3.5vmin; z-index:10; width:340px; max-width:80vw;
     background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px 18px 14px;
     box-shadow:0 18px 50px rgba(0,0,0,.6); transform:translateY(12px) scale(.98); opacity:0;
@@ -500,6 +813,7 @@ PAGE = r"""
   </div>
   <div id="wave"></div>
 </div>
+<a id="maplink" href="/map" title="Bird map">map</a>
 <button id="fab" title="Controls" aria-label="Controls">
   <svg viewBox="0 0 24 24" width="46%" height="46%" fill="none" stroke="currentColor"
     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -592,6 +906,238 @@ tick(); setInterval(tick,1500);
 """
 
 
+# Historical map: detections (with GPS) as clustered markers, plus the bike-
+# ride trail as a polyline. Vanilla Leaflet + markercluster from CDN, no build.
+MAP_PAGE = r"""
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Birdsong · Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<style>
+  :root { --bg:#0b0f14; --fg:#f4efe8; --muted:#aeb8c2; --accent:#9fe3c5;
+    --panel:#121922; --line:#243040; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  #app { display:flex; height:100%; }
+  #side { width:320px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+    overflow:auto; padding:18px; }
+  #map { flex:1; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background:#121922; color:#f4efe8;
+    box-shadow:0 6px 28px rgba(0,0,0,.5); }
+  .pop { font-size:14px; line-height:1.4; }
+  .pop b { color:var(--accent); }
+  .pop em { color:var(--muted); font-style:italic; }
+  h1 { font-size:18px; margin-bottom:14px; display:flex; align-items:center;
+    justify-content:space-between; gap:8px; }
+  h1 a { color:var(--muted); font-size:12px; text-decoration:none; letter-spacing:.18em;
+    text-transform:uppercase; }
+  h1 a:hover { color:var(--fg); }
+  h3 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#7f8c99;
+    margin:16px 0 8px; }
+  .seg { display:flex; gap:6px; margin-bottom:10px; }
+  .seg button { flex:1; padding:8px 0; background:#1d2735; border:1px solid var(--line);
+    color:var(--fg); font-size:12px; border-radius:8px; cursor:pointer; }
+  .seg button.on { background:var(--accent); color:#0b0f14; border-color:var(--accent); }
+  .dates { display:flex; gap:6px; }
+  .dates input { flex:1; padding:8px; background:#0b0f14; color:var(--fg);
+    border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:13px; }
+  .row2 { display:flex; align-items:center; justify-content:space-between; margin:10px 0; }
+  .row2 .name { font-size:14px; }
+  .toggle { width:38px; height:22px; border-radius:999px; background:#2a3645; position:relative;
+    cursor:pointer; transition:.2s; flex:none; }
+  .toggle.on { background:var(--accent); }
+  .toggle::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px;
+    border-radius:50%; background:#fff; transition:.2s; }
+  .toggle.on::after { left:19px; }
+  .stats { font-size:13px; color:var(--muted); margin-bottom:10px; }
+  .stats b { color:var(--fg); }
+  .specieslist { max-height:50vh; overflow:auto; }
+  .sp { display:flex; align-items:center; gap:8px; padding:6px 6px; border-radius:8px;
+    cursor:pointer; user-select:none; }
+  .sp:hover { background:#1d2735; }
+  .sp.off { opacity:.35; }
+  .sp .sw { width:12px; height:12px; border-radius:50%; flex:none; }
+  .sp .n { flex:1; font-size:13px; }
+  .sp .c { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .empty { color:var(--muted); font-size:13px; padding:10px 0; }
+  @media (max-width: 720px) {
+    #app { flex-direction:column; }
+    #side { width:100%; max-height:46vh; border-right:none; border-bottom:1px solid var(--line); }
+  }
+</style></head><body>
+<div id="app">
+  <aside id="side">
+    <h1>Bird map <a href="/">live ›</a></h1>
+    <h3>Range</h3>
+    <div class="seg" id="seg">
+      <button data-d="1">today</button>
+      <button data-d="7" class="on">7d</button>
+      <button data-d="30">30d</button>
+      <button data-d="365">year</button>
+    </div>
+    <div class="dates">
+      <input type="date" id="from"><input type="date" id="to">
+    </div>
+    <div class="row2"><div class="name">Show ride trail</div>
+      <div class="toggle on" id="trailToggle"></div></div>
+    <div class="stats" id="stats">loading…</div>
+    <h3>Species</h3>
+    <div class="specieslist" id="specieslist"></div>
+  </aside>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+const DEFAULT_LAT = {{ default_lat|tojson }};
+const DEFAULT_LON = {{ default_lon|tojson }};
+const map = L.map('map', {zoomControl:true}).setView([DEFAULT_LAT, DEFAULT_LON], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '© OpenStreetMap'
+}).addTo(map);
+
+const cluster = L.markerClusterGroup({chunkedLoading:true, disableClusteringAtZoom:18});
+map.addLayer(cluster);
+let trailLayer = L.layerGroup().addTo(map);
+
+// 12 well-spaced hues for the top species; everything else uses MUTED.
+const PALETTE = ['#e7b59a','#9fe3c5','#9ec1ff','#ffd479','#ff9c9c','#c79cff',
+                 '#7ad7d1','#ffc99c','#a9e89a','#f29eff','#ff7a7a','#7affc1'];
+const OTHER = '#8b96a3';
+
+const fromEl = document.getElementById('from'), toEl = document.getElementById('to');
+const trailToggle = document.getElementById('trailToggle');
+const statsEl = document.getElementById('stats');
+const speciesEl = document.getElementById('specieslist');
+let speciesColor = new Map();  // scientific -> hex
+let speciesOff = new Set();    // scientific names hidden by user
+
+function isoDate(d){ return d.toISOString().slice(0,10); }
+function setRange(days){
+  const to = new Date();
+  const from = new Date(); from.setDate(from.getDate() - (days - 1));
+  fromEl.value = isoDate(from); toEl.value = isoDate(to);
+  refresh();
+}
+document.querySelectorAll('#seg button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('#seg button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    setRange(parseInt(btn.dataset.d, 10));
+  };
+});
+fromEl.onchange = toEl.onchange = refresh;
+trailToggle.onclick = () => { trailToggle.classList.toggle('on'); drawTrail(lastTrack); };
+
+function mkIcon(color){
+  return L.divIcon({
+    className:'',
+    html:`<div style="width:14px;height:14px;border-radius:50%;background:${color};
+      border:2px solid #0b0f14;box-shadow:0 0 0 1px ${color}88;"></div>`,
+    iconSize:[14,14], iconAnchor:[7,7],
+  });
+}
+
+let lastDetections = [], lastTrack = [];
+
+function refresh(){
+  const q = `from=${fromEl.value}&to=${toEl.value}`;
+  statsEl.textContent = 'loading…';
+  Promise.all([
+    fetch('/detections?' + q).then(r => r.json()),
+    fetch('/track?' + q).then(r => r.json()),
+  ]).then(([dets, track]) => {
+    lastDetections = dets.detections || [];
+    lastTrack = track.points || [];
+    rebuildSpecies(lastDetections);
+    drawMarkers();
+    drawTrail(lastTrack);
+    fitBounds();
+    statsEl.innerHTML = `<b>${lastDetections.length}</b> detection${lastDetections.length===1?'':'s'} · `
+      + `<b>${lastTrack.length}</b> track point${lastTrack.length===1?'':'s'}`;
+  }).catch(e => { statsEl.textContent = 'error loading: ' + e; });
+}
+
+function rebuildSpecies(dets){
+  const counts = new Map();
+  for(const d of dets){
+    if(!counts.has(d.scientific)) counts.set(d.scientific, {common:d.common, count:0});
+    counts.get(d.scientific).count++;
+  }
+  const sorted = [...counts.entries()].sort((a,b) => b[1].count - a[1].count);
+  speciesColor = new Map();
+  sorted.forEach(([sci, _], i) => {
+    speciesColor.set(sci, i < PALETTE.length ? PALETTE[i] : OTHER);
+  });
+  speciesEl.innerHTML = '';
+  if(!sorted.length){ speciesEl.innerHTML = '<div class="empty">no detections with GPS yet</div>'; return; }
+  for(const [sci, info] of sorted){
+    const row = document.createElement('div');
+    row.className = 'sp' + (speciesOff.has(sci) ? ' off' : '');
+    const c = speciesColor.get(sci);
+    row.innerHTML = `<span class="sw" style="background:${c}"></span>`
+      + `<span class="n">${info.common}</span><span class="c">${info.count}</span>`;
+    row.onclick = () => {
+      if(speciesOff.has(sci)) speciesOff.delete(sci); else speciesOff.add(sci);
+      row.classList.toggle('off');
+      drawMarkers();
+    };
+    speciesEl.appendChild(row);
+  }
+}
+
+function drawMarkers(){
+  cluster.clearLayers();
+  const fmt = ts => { try{ return new Date(ts).toLocaleString(); }catch(e){ return ts; } };
+  for(const d of lastDetections){
+    if(speciesOff.has(d.scientific)) continue;
+    if(d.lat == null || d.lon == null) continue;
+    const c = speciesColor.get(d.scientific) || OTHER;
+    const m = L.marker([d.lat, d.lon], {icon: mkIcon(c)});
+    m.bindPopup(`<div class="pop"><b>${d.common}</b><br>`
+      + `<em>${d.scientific}</em><br>${fmt(d.ts)}<br>`
+      + `confidence ${d.confidence}</div>`);
+    cluster.addLayer(m);
+  }
+}
+
+function drawTrail(points){
+  trailLayer.clearLayers();
+  if(!trailToggle.classList.contains('on') || points.length < 2) return;
+  // Split the polyline whenever consecutive points are >5 minutes apart, so
+  // separate rides don't get joined with a giant straight line.
+  let seg = [], gap = 5 * 60 * 1000;
+  let lastT = null;
+  for(const p of points){
+    const t = new Date(p.ts).getTime();
+    if(lastT !== null && t - lastT > gap && seg.length){
+      L.polyline(seg, {color:'#9fe3c5', weight:3, opacity:.65}).addTo(trailLayer);
+      seg = [];
+    }
+    seg.push([p.lat, p.lon]);
+    lastT = t;
+  }
+  if(seg.length >= 2) L.polyline(seg, {color:'#9fe3c5', weight:3, opacity:.65}).addTo(trailLayer);
+}
+
+function fitBounds(){
+  const pts = [];
+  for(const d of lastDetections) if(d.lat != null) pts.push([d.lat, d.lon]);
+  for(const p of lastTrack) pts.push([p.lat, p.lon]);
+  if(pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
+}
+
+setRange(7);
+</script>
+</body></html>
+"""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default="plughw:2,0")
@@ -602,14 +1148,24 @@ def main():
     ap.add_argument("--lon", type=float, default=-122.42)
     ap.add_argument("--location", action="store_true", help="start with local filter on")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--gps-device", default="/dev/ttyACM0",
+                    help="USB GPS serial device (falls back to /dev/ttyUSB0)")
+    ap.add_argument("--gps-baud", type=int, default=9600)
+    ap.add_argument("--no-gps", action="store_true",
+                    help="disable the GPS reader entirely")
     args = ap.parse_args()
     CONFIG.update(device=args.device, seconds=args.seconds, rate=args.rate,
                   min_conf=args.min_conf, lat=args.lat, lon=args.lon,
                   use_location=args.location)
+    GPS_CONFIG.update(device=args.gps_device, baud=args.gps_baud,
+                      enabled=not args.no_gps)
 
     db_init()
     load_today()
     threading.Thread(target=detection_loop, daemon=True).start()
+    if GPS_CONFIG["enabled"]:
+        threading.Thread(target=gps_reader_loop, daemon=True).start()
+        threading.Thread(target=track_writer_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=args.port, threaded=True)
 
 

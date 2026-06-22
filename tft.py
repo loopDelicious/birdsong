@@ -206,10 +206,24 @@ def render_go(d, img, view, state, today, beat):
         ctext(d, 96, "detections today", font(15, False), MUTED)
         ctext(d, 132, str(spc), font(36), ACCENT)
         ctext(d, 180, "species", font(15, False), MUTED)
-    else:  # location (GPS placeholder for now)
+    else:  # location (live GPS from /state)
         d.text((8, 8), "LOCATION", font=font(13, False), fill=MUTED)
-        ctext(d, 100, "no GPS", font(28), MUTED)
-        ctext(d, 140, "(add a USB GPS dongle)", font(13, False), MUTED)
+        gps = (state or {}).get("gps") or {}
+        if gps.get("fix") and gps.get("lat") is not None:
+            ctext(d, 60, f"{gps['lat']:.5f}", font(24), FG)
+            ctext(d, 92, f"{gps['lon']:.5f}", font(24), FG)
+            sats = gps.get("sats") or 0
+            spd_ms = gps.get("speed")
+            kmh = (spd_ms * 3.6) if spd_ms else 0
+            ctext(d, 140, f"{kmh:0.1f} km/h", font(18), ACCENT)
+            ctext(d, 172, f"{sats} sats", font(13, False), MUTED)
+        elif gps.get("ts"):
+            ctext(d, 100, "searching", font(26), MUTED)
+            sats = gps.get("sats") or 0
+            ctext(d, 140, f"{sats} sats visible", font(13, False), MUTED)
+        else:
+            ctext(d, 100, "no GPS", font(28), MUTED)
+            ctext(d, 140, "(plug in a USB GPS)", font(13, False), MUTED)
     footer(d, "on-the-go", 3, view)
 
 
