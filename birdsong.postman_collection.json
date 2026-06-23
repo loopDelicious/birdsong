@@ -274,6 +274,23 @@
 				},
 				{
 					"name": "Map page (HTML)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Render the full Leaflet map page in the Postman visualizer.",
+									"// A <base> tag is injected so the page's relative fetches",
+									"// (/detections, /track, etc.) resolve against your Pi's base_url.",
+									"var html = pm.response.text();",
+									"var base = pm.collectionVariables.get('base_url') || 'http://birdpi.local:8000';",
+									"html = html.replace('<head>', '<head>\\n<base href=\"' + base + '/\">');",
+									"pm.visualizer.set(html);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -286,7 +303,7 @@
 								"map"
 							]
 						},
-						"description": "The Leaflet map view: clustered markers for detections + the ride trail, with species and date-range filters. Open in a browser; not really a JSON API."
+						"description": "The Leaflet map view: clustered markers for detections + the ride trail, with species and date-range filters. Hit Send, then click Visualize to see the live map inside Postman."
 					},
 					"response": []
 				}
