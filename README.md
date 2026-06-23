@@ -31,6 +31,8 @@ tally, so the wall always glows gently rather than going blank:
   the CPU in ~0.2 s per 3 s window)
 - USB microphone (any class-compliant USB audio input; the Pi has no analog mic in)
 - A display via HDMI (Pi 5 uses **micro-HDMI** → you need a micro-HDMI→HDMI cable)
+- *(optional)* USB GPS stick for on-the-go mode — u-blox VK-172 or similar NMEA
+  USB device; no drivers needed on Pi OS
 
 ## Software setup (on the Pi)
 
@@ -149,7 +151,18 @@ ride produces one point every few seconds. Open **http://birdpi.local:8000/map**
 to see it: clustered markers per species over OpenStreetMap, your ride drawn
 as a polyline, with date-range and per-species filters.
 
-### Hardware setup
+### Before a bike ride
+
+1. Plug the GPS stick into one of the Pi's USB ports.
+2. Switch the Pi to a USB battery bank (disconnect wall power, connect battery).
+3. Ride — the app is already running as a service and will start tagging
+   detections with your location as soon as the stick gets a satellite fix
+   (typically 30–60 s outdoors). Check `curl birdpi:8000/gps` or the TFT
+   Location view to confirm `fix: true` before you set off.
+4. When you're back, open **http://birdpi.local:8000/map** to see where you
+   heard each species, with your ride trail drawn as a polyline.
+
+### Hardware
 
 - u-blox-based sticks (VK-172, VK-162) show up at `/dev/ttyACM0`.
 - Prolific PL2303-based sticks (e.g. BU-353S4) show up at `/dev/ttyUSB0`.
