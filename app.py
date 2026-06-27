@@ -22,6 +22,7 @@ import threading
 import time
 import warnings
 
+import numpy as np
 import requests
 from flask import Flask, jsonify, render_template_string, request
 
@@ -324,6 +325,80 @@ def track_writer_loop():
             last_ts = now
 
 
+# ----------------------------------------------------------- spectrogram cache
+import struct as _struct
+import zlib as _zlib
+
+# Palette: dark bg → navy → steel → warm → accent peach (matches the UI)
+_CMAP = np.array([
+    [ 11,  15,  20],
+    [ 25,  40,  62],
+    [ 70,  90, 115],
+    [195, 150, 118],
+    [231, 181, 154],
+], dtype=np.float32)
+
+
+def _apply_cmap(v):
+    """Map 0-1 float HxW array → HxWx3 uint8 using the app palette."""
+    n = len(_CMAP) - 1
+    idx = np.clip(v * n, 0, n - 1e-9)
+    lo = idx.astype(int)
+    frac = (idx - lo)[..., np.newaxis]
+    return (_CMAP[lo] + frac * (_CMAP[np.minimum(lo + 1, n)] - _CMAP[lo])).astype(np.uint8)
+
+
+def _encode_png(rgb):
+    """Encode HxWx3 uint8 array as PNG bytes using stdlib only (no Pillow)."""
+    h, w = rgb.shape[:2]
+    def chunk(tag, data):
+        p = tag + data
+        return (_struct.pack('>I', len(data)) + p
+                + _struct.pack('>I', _zlib.crc32(p) & 0xffffffff))
+    rows = b''.join(b'\x00' + rgb[r].tobytes() for r in range(h))
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', _struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', _zlib.compress(rows, 6))
+            + chunk(b'IEND', b''))
+
+
+SPEC_CACHE = {}        # scientific -> PNG bytes
+SPEC_LOCK = threading.Lock()
+_SPEC_BUSY = set()
+_SPEC_BUSY_LOCK = threading.Lock()
+
+
+def ensure_spectrogram(scientific, y, sr):
+    """Generate a mel spectrogram PNG in a background thread; cache indefinitely."""
+    with SPEC_LOCK:
+        if scientific in SPEC_CACHE:
+            return
+    with _SPEC_BUSY_LOCK:
+        if scientific in _SPEC_BUSY:
+            return
+        _SPEC_BUSY.add(scientific)
+
+    def work():
+        try:
+            import librosa
+            mel = librosa.feature.melspectrogram(
+                y=y, sr=sr, n_mels=80, fmin=500, fmax=12000, hop_length=256)
+            db = librosa.power_to_db(mel, ref=np.max)
+            norm = (db - db.min()) / max(float(db.max() - db.min()), 1e-6)
+            norm = np.flipud(norm)   # low freq at bottom
+            rgb = _apply_cmap(norm)
+            png = _encode_png(rgb)
+            with SPEC_LOCK:
+                SPEC_CACHE[scientific] = png
+        except Exception as e:
+            print(f"spectrogram error: {e}", flush=True)
+        finally:
+            with _SPEC_BUSY_LOCK:
+                _SPEC_BUSY.discard(scientific)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 # ------------------------------------------------------------------ bird photo
 def fetch_image(common, scientific):
     if scientific in IMG_CACHE:
@@ -431,6 +506,16 @@ def detection_loop():
                     rec = Recording(analyzer, tmp, **kwargs)
                     rec.analyze()
                 if rec.detections:
+                    # Read audio once for spectrogram generation — fast (<50ms
+                    # for a 3-second chunk) and done before the next record.
+                    _y_spec = _sr_spec = None
+                    try:
+                        import soundfile as _sf
+                        _y_spec, _sr_spec = _sf.read(tmp, dtype='float32')
+                        if _y_spec.ndim > 1:
+                            _y_spec = _y_spec.mean(axis=1)
+                    except Exception:
+                        pass
                     now = datetime.datetime.now()
                     ts = time.time()
                     timestr = now.strftime("%-I:%M %p")
@@ -459,9 +544,11 @@ def detection_loop():
                                               "scientific": sci, "count": 1,
                                               "last": timestr}
                         names = sorted({d["common_name"] for d in rec.detections})
-                    # photo lookup + logging happen OUTSIDE the state lock
+                    # photo / spectrogram / logging happen OUTSIDE the state lock
                     for d in rec.detections:
                         ensure_image(d["common_name"], d["scientific_name"])
+                        if _y_spec is not None:
+                            ensure_spectrogram(d["scientific_name"], _y_spec, _sr_spec)
                         log_detection(
                             now, d["common_name"], d["scientific_name"],
                             d["confidence"],
@@ -516,6 +603,16 @@ def state():
 @app.route("/gps")
 def gps_endpoint():
     return jsonify(gps_snapshot())
+
+
+@app.route("/spectrogram")
+def spectrogram_endpoint():
+    sci = request.args.get("sci", "")
+    with SPEC_LOCK:
+        png = SPEC_CACHE.get(sci)
+    if not png:
+        return "", 404
+    return png, 200, {"Content-Type": "image/png", "Cache-Control": "no-store"}
 
 
 @app.route("/control", methods=["POST"])
@@ -759,6 +856,12 @@ PAGE = r"""
   #wave span { width:.4vmin; height:100%; background:rgba(255,255,255,.7); border-radius:2px;
     transform-origin:center; animation:wv 1.7s ease-in-out infinite; }
   @keyframes wv { 0%,100%{transform:scaleY(.22)} 50%{transform:scaleY(1)} }
+  #spec-strip { position:absolute; left:0; right:0; bottom:0; height:14vh; min-height:60px;
+    max-height:120px; opacity:0; transition:opacity 1.6s ease; pointer-events:none; overflow:hidden; }
+  #spec-strip.show { opacity:0.72; }
+  #spec-img { width:100%; height:100%; object-fit:fill; display:block;
+    -webkit-mask-image:linear-gradient(to bottom,transparent 0%,rgba(0,0,0,.9) 44%);
+    mask-image:linear-gradient(to bottom,transparent 0%,rgba(0,0,0,.9) 44%); }
   #fab { position:fixed; bottom:3.5vmin; right:3.5vmin; z-index:10; width:6.5vmin; height:6.5vmin;
     min-width:46px; min-height:46px; border-radius:50%; background:var(--panel);
     border:1px solid var(--line); color:var(--fg); cursor:pointer; opacity:0; pointer-events:none;
@@ -802,6 +905,7 @@ PAGE = r"""
     <div class="photo" id="layerB"><div class="haze"></div><div class="subject"></div></div>
   </div>
   <div id="scrim"></div>
+  <div id="spec-strip"><img id="spec-img" src="" alt=""></div>
   <div id="info" class="hide">
     <div id="common"></div><div id="sci"></div><div id="meta"></div><div id="also"></div>
   </div>
@@ -843,7 +947,19 @@ const photos=document.getElementById('photos'),
   fab=document.getElementById('fab'), panel=document.getElementById('panel'),
   locToggle=document.getElementById('locToggle'), confVal=document.getElementById('confVal'),
   confUp=document.getElementById('confUp'), confDown=document.getElementById('confDown'),
-  clearBtn=document.getElementById('clearBtn'), wave=document.getElementById('wave');
+  clearBtn=document.getElementById('clearBtn'), wave=document.getElementById('wave'),
+  specStrip=document.getElementById('spec-strip'), specImg=document.getElementById('spec-img');
+
+let specSci=null;
+function loadSpec(scientific){
+  // Retry every tick until the server has the PNG; then stop polling.
+  if(specSci===scientific && specStrip.classList.contains('show')) return;
+  if(specSci!==scientific){ specSci=scientific; specStrip.classList.remove('show'); specImg.src=''; }
+  const probe=new Image();
+  probe.onload=()=>{ if(specSci===scientific){ specImg.src=probe.src; specStrip.classList.add('show'); } };
+  probe.src='/spectrogram?sci='+encodeURIComponent(scientific)+'&_t='+Date.now();
+}
+function clearSpec(){ specSci=null; specStrip.classList.remove('show'); specImg.src=''; }
 
 let cfg={min_conf:0.5, use_location:true};
 fab.onclick=()=>panel.classList.toggle('open');
@@ -892,8 +1008,10 @@ async function tick(){
     meta.textContent='last heard at '+(hero.time||'').toLowerCase();
     const others=s.birds.filter(b=>b.scientific!==hero.scientific).map(b=>b.common);
     also.textContent=others.length?'also now · '+others.slice(0,3).join(' · '):'';
+    loadSpec(hero.scientific);
   } else {
     info.classList.add('hide'); photos.classList.add('resting'); idle.classList.add('show'); heroKey=null;
+    clearSpec();
     qlabel.textContent='a quiet '+partOfDay();
     qstat.textContent=s.species_today?(s.species_today+(s.species_today===1?' visitor':' visitors')+' today')
       :'no visitors yet today';
@@ -964,11 +1082,19 @@ MAP_PAGE = r"""
   .sp .n { flex:1; font-size:13px; }
   .sp .c { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .empty { color:var(--muted); font-size:13px; padding:10px 0; }
+  #homepill { position:fixed; bottom:1.6rem; right:1.6rem; z-index:20;
+    color:var(--fg); text-decoration:none; font-size:13px; letter-spacing:.18em;
+    text-transform:uppercase; padding:9px 16px; border:1px solid var(--line);
+    border-radius:999px; background:rgba(18,25,34,.7); backdrop-filter:blur(6px);
+    opacity:.55; transition:opacity .25s; }
+  #homepill:hover { opacity:1; }
   @media (max-width: 720px) {
     #app { flex-direction:column; }
     #side { width:100%; max-height:46vh; border-right:none; border-bottom:1px solid var(--line); }
+    #homepill { bottom:1rem; right:1rem; }
   }
 </style></head><body>
+<a id="homepill" href="/" title="Back to live display">live</a>
 <div id="app">
   <aside id="side">
     <h1>Bird map <a href="/">live ›</a></h1>
