@@ -1082,7 +1082,7 @@ MAP_PAGE = r"""
   .sp .n { flex:1; font-size:13px; }
   .sp .c { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .empty { color:var(--muted); font-size:13px; padding:10px 0; }
-  #homepill { position:fixed; bottom:1.6rem; right:1.6rem; z-index:9999;
+  #homepill { position:fixed; bottom:1.6rem; left:1.6rem; z-index:9999;
     color:var(--fg); text-decoration:none; font-size:13px; letter-spacing:.18em;
     text-transform:uppercase; padding:9px 16px; border:1px solid var(--line);
     border-radius:999px; background:rgba(18,25,34,.85); backdrop-filter:blur(6px);
@@ -1091,7 +1091,7 @@ MAP_PAGE = r"""
   @media (max-width: 720px) {
     #app { flex-direction:column; }
     #side { width:100%; max-height:46vh; border-right:none; border-bottom:1px solid var(--line); }
-    #homepill { bottom:1rem; right:1rem; }
+    #homepill { bottom:1rem; left:1rem; }
   }
 </style></head><body>
 <a id="homepill" href="/" title="Back to live display">live</a>
