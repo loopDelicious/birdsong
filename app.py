@@ -775,6 +775,29 @@ def track_log():
     })
 
 
+def _demo_spectrogram(scientific):
+    """Generate a synthetic bird-frequency chirp spectrogram for demo/testing."""
+    def work():
+        try:
+            import librosa
+            sr = 48000
+            t = np.linspace(0, 3.0, sr * 3, dtype=np.float32)
+            # Layered sweeping tones across the bird frequency range (2–8 kHz)
+            y = (0.5 * np.sin(2 * np.pi * (3000 + 2000 * np.sin(2 * np.pi * 2 * t)) * t)
+                 + 0.3 * np.sin(2 * np.pi * (5000 + 1500 * np.sin(2 * np.pi * 3 * t + 1)) * t)
+                 + 0.2 * np.sin(2 * np.pi * (7000 + 800 * t) * t) * np.exp(-t))
+            mel = librosa.feature.melspectrogram(
+                y=y, sr=sr, n_mels=80, fmin=500, fmax=12000, hop_length=256)
+            db = librosa.power_to_db(mel, ref=np.max)
+            norm = (db - db.min()) / max(float(db.max() - db.min()), 1e-6)
+            rgb = _apply_cmap(np.flipud(norm))
+            with SPEC_LOCK:
+                SPEC_CACHE[scientific] = _encode_png(rgb)
+        except Exception as e:
+            print(f"demo spectrogram error: {e}", flush=True)
+    threading.Thread(target=work, daemon=True).start()
+
+
 @app.route("/demo", methods=["POST"])
 def demo():
     """Inject species into the live display (for screenshots / demos). Body:
@@ -790,6 +813,8 @@ def demo():
                            "confidence": round(float(s.get("confidence", 0.8)), 2),
                            "time": s.get("time", now),
                            "first_ts": ts + i * 0.001, "last_ts": ts}
+        if sci not in SPEC_CACHE:
+            _demo_spectrogram(sci)
     return jsonify({"ok": True, "active": list(ACTIVE)})
 
 
