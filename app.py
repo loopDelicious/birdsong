@@ -329,13 +329,14 @@ def track_writer_loop():
 import struct as _struct
 import zlib as _zlib
 
-# Palette: dark bg → navy → steel → warm → accent peach (matches the UI)
+# Spectrogram palette: silence=dark bg → teal → warm peak.
+# Higher contrast so frequency structure reads clearly in the small box.
 _CMAP = np.array([
-    [ 11,  15,  20],
-    [ 25,  40,  62],
-    [ 70,  90, 115],
-    [195, 150, 118],
-    [231, 181, 154],
+    [ 11,  15,  20],   # silence – bg black
+    [ 14,  52,  62],   # low     – deep teal-navy
+    [ 38, 140, 130],   # mid     – teal
+    [159, 227, 197],   # high    – bright teal accent
+    [231, 181, 154],   # peak    – warm peach accent
 ], dtype=np.float32)
 
 
@@ -877,16 +878,16 @@ PAGE = r"""
   #idle .qlist { color:#8b96a3; font-size:2.2vmin; max-width:80vw; }
   @keyframes breathe { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.95;transform:scale(1.14)} }
   #wave { position:absolute; right:6vmin; bottom:6vmin; display:flex; gap:.5vmin;
-    align-items:center; height:2.4vmin; opacity:.42; }
+    align-items:center; height:2.4vmin; opacity:.42; transition:opacity .8s ease; }
+  #wave.hidden { opacity:0; }
   #wave span { width:.4vmin; height:100%; background:rgba(255,255,255,.7); border-radius:2px;
     transform-origin:center; animation:wv 1.7s ease-in-out infinite; }
   @keyframes wv { 0%,100%{transform:scaleY(.22)} 50%{transform:scaleY(1)} }
-  #spec-strip { position:absolute; left:0; right:0; bottom:0; height:14vh; min-height:60px;
-    max-height:120px; opacity:0; transition:opacity 1.6s ease; pointer-events:none; overflow:hidden; }
-  #spec-strip.show { opacity:0.72; }
-  #spec-img { width:100%; height:100%; object-fit:fill; display:block;
-    -webkit-mask-image:linear-gradient(to bottom,transparent 0%,rgba(0,0,0,.9) 44%);
-    mask-image:linear-gradient(to bottom,transparent 0%,rgba(0,0,0,.9) 44%); }
+  #spec-box { position:absolute; right:6vmin; bottom:6vmin; width:180px; height:68px;
+    border-radius:8px; overflow:hidden; opacity:0; transition:opacity 1s ease;
+    pointer-events:none; box-shadow:0 2px 16px rgba(0,0,0,.5); }
+  #spec-box.show { opacity:0.78; }
+  #spec-box img { width:100%; height:100%; object-fit:fill; display:block; }
   #fab { position:fixed; bottom:3.5vmin; right:3.5vmin; z-index:10; width:6.5vmin; height:6.5vmin;
     min-width:46px; min-height:46px; border-radius:50%; background:var(--panel);
     border:1px solid var(--line); color:var(--fg); cursor:pointer; opacity:0; pointer-events:none;
@@ -930,7 +931,6 @@ PAGE = r"""
     <div class="photo" id="layerB"><div class="haze"></div><div class="subject"></div></div>
   </div>
   <div id="scrim"></div>
-  <div id="spec-strip"><img id="spec-img" src="" alt=""></div>
   <div id="info" class="hide">
     <div id="common"></div><div id="sci"></div><div id="meta"></div><div id="also"></div>
   </div>
@@ -941,6 +941,7 @@ PAGE = r"""
     <div class="qlist" id="qlist"></div>
   </div>
   <div id="wave"></div>
+  <div id="spec-box"><img id="spec-img" src="" alt=""></div>
 </div>
 <a id="maplink" href="/map" title="Bird map">map</a>
 <button id="fab" title="Controls" aria-label="Controls">
@@ -973,18 +974,23 @@ const photos=document.getElementById('photos'),
   locToggle=document.getElementById('locToggle'), confVal=document.getElementById('confVal'),
   confUp=document.getElementById('confUp'), confDown=document.getElementById('confDown'),
   clearBtn=document.getElementById('clearBtn'), wave=document.getElementById('wave'),
-  specStrip=document.getElementById('spec-strip'), specImg=document.getElementById('spec-img');
+  specBox=document.getElementById('spec-box'), specImg=document.getElementById('spec-img');
 
 let specSci=null;
 function loadSpec(scientific){
-  // Retry every tick until the server has the PNG; then stop polling.
-  if(specSci===scientific && specStrip.classList.contains('show')) return;
-  if(specSci!==scientific){ specSci=scientific; specStrip.classList.remove('show'); specImg.src=''; }
+  if(specSci===scientific && specBox.classList.contains('show')) return;
+  if(specSci!==scientific){ specSci=scientific; specBox.classList.remove('show'); specImg.src=''; }
   const probe=new Image();
-  probe.onload=()=>{ if(specSci===scientific){ specImg.src=probe.src; specStrip.classList.add('show'); } };
+  probe.onload=()=>{
+    if(specSci===scientific){
+      specImg.src=probe.src; specBox.classList.add('show'); wave.classList.add('hidden');
+    }
+  };
   probe.src='/spectrogram?sci='+encodeURIComponent(scientific)+'&_t='+Date.now();
 }
-function clearSpec(){ specSci=null; specStrip.classList.remove('show'); specImg.src=''; }
+function clearSpec(){
+  specSci=null; specBox.classList.remove('show'); specImg.src=''; wave.classList.remove('hidden');
+}
 
 let cfg={min_conf:0.5, use_location:true};
 fab.onclick=()=>panel.classList.toggle('open');
