@@ -883,11 +883,12 @@ PAGE = r"""
   #wave span { width:.4vmin; height:100%; background:rgba(255,255,255,.7); border-radius:2px;
     transform-origin:center; animation:wv 1.7s ease-in-out infinite; }
   @keyframes wv { 0%,100%{transform:scaleY(.22)} 50%{transform:scaleY(1)} }
-  #spec-box { position:absolute; right:6vmin; bottom:6vmin; width:180px; height:68px;
-    border-radius:8px; overflow:hidden; opacity:0; transition:opacity 1s ease;
-    pointer-events:none; box-shadow:0 2px 16px rgba(0,0,0,.5); }
+  #spec-box { position:absolute; right:6vmin; bottom:6vmin; width:196px; height:84px;
+    border-radius:10px; overflow:hidden; opacity:0; transition:opacity 1s ease;
+    pointer-events:none; box-shadow:0 2px 16px rgba(0,0,0,.5);
+    background:var(--bg); padding:8px; }
   #spec-box.show { opacity:0.78; }
-  #spec-box img { width:100%; height:100%; object-fit:fill; display:block; }
+  #spec-box img { width:100%; height:100%; object-fit:fill; display:block; border-radius:4px; }
   #fab { position:fixed; bottom:3.5vmin; right:3.5vmin; z-index:10; width:6.5vmin; height:6.5vmin;
     min-width:46px; min-height:46px; border-radius:50%; background:var(--panel);
     border:1px solid var(--line); color:var(--fg); cursor:pointer; opacity:0; pointer-events:none;
